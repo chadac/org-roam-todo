@@ -3055,9 +3055,10 @@ Binds:
   (define-key global-map (kbd "C-c n p") org-roam-todo-project-map)
   (message "TODO keybindings set up: C-c n t (global), C-c n p (project)"))
 
-;; Auto-setup keybindings when loaded
-(with-eval-after-load 'org-roam-todo
-  (org-roam-todo-setup-global-keybindings))
+;; Auto-setup keybindings when this file is loaded.
+;; We call directly rather than using with-eval-after-load because all
+;; required definitions are already available at this point in the file.
+(org-roam-todo-setup-global-keybindings)
 
 (provide 'org-roam-todo)
 ;;; org-roam-todo.el ends here
