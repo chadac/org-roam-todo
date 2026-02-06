@@ -2800,6 +2800,92 @@ TODO-ID can be a file path or title (defaults to current TODO)."
         (save-buffer)))
     "Updated acceptance criteria"))
 
+;;;; Claude Agent Integration
+
+;; Forward declarations for claude-agent functions
+(defvar claude-agent--work-dir)
+(defvar claude-agent-before-send-message-hook)
+(declare-function claude-agent--send-system-message "claude-agent-repl")
+
+(defun org-roam-todo--acceptance-reminder ()
+  "Generate a TODO status and acceptance criteria reminder message.
+Returns a formatted string based on the current TODO's status:
+- active: Shows acceptance criteria and encourages work on unchecked items
+- review: Tells the agent to wait for user feedback
+- other statuses: Returns nil (no reminder needed)
+This is intended to be used as an :elisp-fn for a system message hook."
+  (condition-case nil
+      (let* ((current (org-roam-todo-mcp-get-current))
+             (parsed (json-read-from-string current))
+             (title (alist-get 'title parsed))
+             (status (alist-get 'status parsed)))
+        (when title
+          (pcase status
+            ("active"
+             ;; Active: show criteria, encourage work
+             (let* ((criteria-json (org-roam-todo-mcp-get-acceptance-criteria))
+                    (criteria (json-read-from-string criteria-json))
+                    (lines '()))
+               (seq-doseq (item criteria)
+                 (let ((text (alist-get 'text item))
+                       (checked (alist-get 'checked item)))
+                   (push (format "- [%s] %s"
+                                 (if (eq checked t) "X" " ")
+                                 text)
+                         lines)))
+               (when lines
+                 (format "TASK REMINDER: You are working on: %s\nStatus: active\n\nAcceptance Criteria:\n%s\n\nStay focused on completing unchecked items."
+                         title
+                         (mapconcat #'identity (nreverse lines) "\n")))))
+            ("review"
+             ;; Review: tell agent to wait for feedback
+             (format "TASK STATUS: Your task \"%s\" is in REVIEW status.\nYou have completed your work and it is awaiting user review.\nDo NOT make additional changes unless the user provides feedback.\nWhen the user sends you a message, the status will automatically change back to 'active'."
+                     title))
+            ;; For draft/done/rejected, no reminder needed
+            (_ nil))))
+    (error nil)))
+
+(defun org-roam-todo--maybe-revert-review-status ()
+  "If current buffer's TODO is in review status, revert to active.
+When the user sends a message to an agent whose TODO is in review status,
+this automatically changes the status back to active (since feedback implies
+more work is needed) and sends a system message notifying the agent.
+This is intended to be added to `claude-agent-before-send-message-hook'."
+  (when (bound-and-true-p claude-agent--work-dir)
+    (condition-case nil
+        (let* ((expanded-dir (directory-file-name
+                              (expand-file-name claude-agent--work-dir)))
+               (todo (cl-find-if
+                      (lambda (td)
+                        (let ((wpath (plist-get td :worktree-path)))
+                          (and wpath
+                               (string= (directory-file-name
+                                         (expand-file-name wpath))
+                                        expanded-dir))))
+                      (org-roam-todo--query-todos))))
+          (when (and todo (string= (plist-get todo :status) "review"))
+            (let ((file (plist-get todo :file))
+                  (title (plist-get todo :title)))
+              ;; Update status directly in the file
+              (when file
+                (with-current-buffer (find-file-noselect file)
+                  (save-excursion
+                    (goto-char (point-min))
+                    (when (re-search-forward "^:STATUS:\\s-*.+$" nil t)
+                      (replace-match ":STATUS: active")))
+                  (save-buffer))
+                ;; Send system notification to agent
+                (when (fboundp 'claude-agent--send-system-message)
+                  (claude-agent--send-system-message
+                   (format "STATUS CHANGE: Your task \"%s\" has been moved from 'review' back to 'active'. The user has provided feedback below. Please review their message and continue working on the task."
+                           (or title "current task"))))))))
+      (error nil))))
+
+;; Hook into claude-agent when it's loaded
+(with-eval-after-load 'claude-agent-repl
+  (add-hook 'claude-agent-before-send-message-hook
+            #'org-roam-todo--maybe-revert-review-status))
+
 ;;;; MCP Tool Registrations
 
 ;; These are registered when claude-mcp is loaded
@@ -2970,7 +3056,7 @@ Binds:
   (message "TODO keybindings set up: C-c n t (global), C-c n p (project)"))
 
 ;; Auto-setup keybindings when loaded
-(with-eval-after-load 'todo
+(with-eval-after-load 'org-roam-todo
   (org-roam-todo-setup-global-keybindings))
 
 (provide 'org-roam-todo)
