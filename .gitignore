@@ -1,0 +1,17 @@
+# Byte-compiled files
+*.elc
+
+# Backup files
+*~
+\#*\#
+.\#*
+
+# Auto-save files
+.#*
+
+# Package build artifacts
+/dist/
+*.tar
+
+# Local development
+.dir-locals-2.el
