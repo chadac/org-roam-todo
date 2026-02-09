@@ -599,6 +599,30 @@ Otherwise starts a new session and saves the session ID to the TODO."
             ;; Switch to the buffer
             (when buffer
               (pop-to-buffer buffer))))))))
+
+(defun org-roam-todo-list-create-todo ()
+  "Create a new TODO from the TODO list buffer.
+If in a project-filtered buffer, creates a TODO for that project.
+If in the general TODO list, prompts for project selection first."
+  (interactive)
+  (if org-roam-todo-list--project-filter
+      ;; Project-filtered buffer: find project root and capture for it
+      (let ((project-root (org-roam-todo-list--find-project-root
+                           org-roam-todo-list--project-filter)))
+        (if project-root
+            (org-roam-todo-capture project-root)
+          (user-error "Could not find project root for %s"
+                      org-roam-todo-list--project-filter)))
+    ;; General buffer: prompt for project selection
+    (org-roam-todo-capture)))
+
+(defun org-roam-todo-list--find-project-root (project-name)
+  "Find the project root for PROJECT-NAME.
+Searches existing TODOs for the project root path."
+  (let ((todos (org-roam-todo-list--call-get-entries)))
+    (cl-loop for todo in todos
+             when (string= (plist-get todo :project-name) project-name)
+             return (plist-get todo :project-root))))
 ;;; ============================================================
 ;;; Keymaps
 ;;; ============================================================
@@ -608,6 +632,7 @@ Otherwise starts a new session and saves the session ID to the TODO."
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "g") #'org-roam-todo-list-refresh)
     (define-key map (kbd "s") #'org-roam-todo-list-toggle-subtasks)
+    (define-key map (kbd "t") #'org-roam-todo-list-create-todo)
     (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `org-roam-todo-list-mode'.")
