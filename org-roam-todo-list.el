@@ -30,6 +30,11 @@
 (declare-function claude-agent-run "claude-agent-repl")
 (defvar claude-agent--session-info)
 
+;; Declare claude-sessions faces (defined in claude-sessions.el)
+(defvar claude-sessions-status-ready)
+(defvar claude-sessions-status-thinking)
+(defvar claude-sessions-status-waiting)
+
 ;;; ============================================================
 ;;; Customization
 ;;; ============================================================
@@ -47,10 +52,10 @@
   '((status . 10)
     (project . 20)
     (title . 45)
-    (agent . 6)
-    (worktree . 4))
+    (worktree . 4)
+    (agent . 8))
   "Alist of column widths for TODO display.
-Columns are: status, project, title, agent, wt (worktree)."
+Columns are: status, project, title, wt (worktree), agent."
   :type '(alist :key-type symbol :value-type integer)
   :group 'org-roam-todo-list)
 
@@ -59,6 +64,36 @@ Columns are: status, project, title, agent, wt (worktree)."
 Set to nil to disable auto-refresh."
   :type '(choice integer (const :tag "Disabled" nil))
   :group 'org-roam-todo-list)
+
+;;; ============================================================
+;;; Auto-Refresh Timer
+;;; ============================================================
+
+(defvar-local org-roam-todo-list--refresh-timer nil
+  "Timer for auto-refreshing agent status.")
+
+(defun org-roam-todo-list--start-auto-refresh ()
+  "Start the auto-refresh timer for agent status."
+  (when (and org-roam-todo-list-refresh-interval
+             (null org-roam-todo-list--refresh-timer))
+    (setq org-roam-todo-list--refresh-timer
+          (run-with-timer org-roam-todo-list-refresh-interval
+                          org-roam-todo-list-refresh-interval
+                          #'org-roam-todo-list--maybe-refresh
+                          (current-buffer)))))
+
+(defun org-roam-todo-list--stop-auto-refresh ()
+  "Stop the auto-refresh timer."
+  (when org-roam-todo-list--refresh-timer
+    (cancel-timer org-roam-todo-list--refresh-timer)
+    (setq org-roam-todo-list--refresh-timer nil)))
+
+(defun org-roam-todo-list--maybe-refresh (buffer)
+  "Refresh BUFFER if it's still live and visible."
+  (when (and (buffer-live-p buffer)
+             (get-buffer-window buffer t))
+    (with-current-buffer buffer
+      (org-roam-todo-list-refresh))))
 
 ;;; ============================================================
 ;;; Face Aliases (inheriting from org-roam-todo-theme)
@@ -173,22 +208,80 @@ Uses `org-roam-todo-theme-status-face' to support custom workflow statuses."
                             (org-roam-todo-list--get-width 'title)))
 
 (defun org-roam-todo-list--format-worktree (todo)
-  "Format worktree indicator for TODO."
+  "Format worktree indicator for TODO.
+Shows ✓ if worktree exists, ✗ if not (only for non-draft TODOs)."
   (let* ((worktree-path (plist-get todo :worktree-path))
+         (status (plist-get todo :status))
          (has-worktree (and worktree-path (file-directory-p worktree-path)))
-         (indicator (if has-worktree "  " "   "))
-         (face (if has-worktree 'org-roam-todo-list-worktree-active 'default)))
+         ;; Only show indicator for TODOs that should have worktrees
+         (should-have-wt (and (not (string= status "draft"))
+                              (not (string= status "done"))
+                              (not (string= status "rejected"))))
+         (indicator (cond
+                     (has-worktree "✓")
+                     (should-have-wt "✗")
+                     (t " ")))
+         (face (cond
+                (has-worktree 'org-roam-todo-list-worktree-active)
+                (should-have-wt 'error)
+                (t 'default))))
     (propertize (org-roam-todo-list--pad indicator
                                           (org-roam-todo-list--get-width 'worktree))
                 'face face
                 'font-lock-face face)))
 
-(defun org-roam-todo-list--format-agent (_todo)
-  "Format agent status indicator for TODO."
-  ;; TODO: Check if Claude agent is running for this worktree
-  (let* ((agent-running nil)  ; Placeholder - will integrate with claudemacs
-         (face (if agent-running 'org-roam-todo-list-agent-running 'default)))
-    (propertize (org-roam-todo-list--pad (if agent-running "" " ")
+(defun org-roam-todo-list--get-agent-status (worktree-path)
+  "Get agent status info for WORKTREE-PATH.
+Returns a status symbol: `ready', `thinking', `waiting', or nil if no agent.
+Uses the same logic as `claude-sessions--get-session-status'."
+  (let ((expanded-path (file-name-as-directory (expand-file-name worktree-path))))
+    (cl-loop for buffer in (buffer-list)
+             for name = (buffer-name buffer)
+             when (string-match-p "^\\*claude:" name)
+             do (with-current-buffer buffer
+                  (let ((buf-dir (file-name-as-directory
+                                  (expand-file-name default-directory))))
+                    (when (string= buf-dir expanded-path)
+                      ;; Found matching buffer, determine status
+                      (cl-return
+                       (cond
+                        ;; Check if process is alive
+                        ((not (and (boundp 'claude-agent--process)
+                                   claude-agent--process
+                                   (process-live-p claude-agent--process)))
+                         nil)  ; Dead/no process = no agent
+                        ;; Waiting for permission
+                        ((and (boundp 'claude-agent--permission-data)
+                              claude-agent--permission-data)
+                         'waiting)
+                        ;; Thinking/processing
+                        ((and (boundp 'claude-agent--thinking-status)
+                              claude-agent--thinking-status)
+                         'thinking)
+                        ;; Compacting
+                        ((and (boundp 'claude-agent--compacting)
+                              claude-agent--compacting)
+                         'thinking)
+                        ;; Ready
+                        (t 'ready)))))))))
+
+(defun org-roam-todo-list--format-agent (todo)
+  "Format agent status indicator for TODO.
+Shows status matching `*claude-sessions*': ready, thinking, waiting."
+  (let* ((worktree-path (plist-get todo :worktree-path))
+         (status (and worktree-path
+                      (org-roam-todo-list--get-agent-status worktree-path)))
+         (indicator (pcase status
+                      ('ready "ready")
+                      ('thinking "thinking")
+                      ('waiting "waiting")
+                      (_ "")))
+         (face (pcase status
+                 ('ready 'claude-sessions-status-ready)
+                 ('thinking 'claude-sessions-status-thinking)
+                 ('waiting 'claude-sessions-status-waiting)
+                 (_ 'default))))
+    (propertize (org-roam-todo-list--pad indicator
                                           (org-roam-todo-list--get-width 'agent))
                 'face face
                 'font-lock-face face)))
@@ -284,9 +377,9 @@ The rejected status always sorts last."
                  " "
                  (org-roam-todo-list--pad "TITLE" (org-roam-todo-list--get-width 'title))
                  " "
-                 (org-roam-todo-list--pad "AGENT" (org-roam-todo-list--get-width 'agent))
+                 (org-roam-todo-list--pad "WT" (org-roam-todo-list--get-width 'worktree))
                  " "
-                 (org-roam-todo-list--pad "WT" (org-roam-todo-list--get-width 'worktree)))))
+                 (org-roam-todo-list--pad "AGENT" (org-roam-todo-list--get-width 'agent)))))
     (insert (propertize header 'face 'bold 'font-lock-face 'bold))
     (insert "\n")
     (insert (make-string (length header) ?─))
@@ -302,7 +395,7 @@ The rejected status always sorts last."
                            (plist-get todo :subtasks))))
     (magit-insert-section section (org-roam-todo-list-todo-section nil nil)
       (oset section todo todo)
-      ;; Build the heading line: status | project | title | agent | wt
+      ;; Build the heading line: status | project | title | wt | agent
       (let ((heading (concat
                       (org-roam-todo-list--format-status status)
                       " "
@@ -310,9 +403,9 @@ The rejected status always sorts last."
                       " "
                       (org-roam-todo-list--format-title title)
                       " "
-                      (org-roam-todo-list--format-agent todo)
+                      (org-roam-todo-list--format-worktree todo)
                       " "
-                      (org-roam-todo-list--format-worktree todo))))
+                      (org-roam-todo-list--format-agent todo))))
         (if has-subtasks
             ;; Use heading for collapsible TODOs with subtasks
             (magit-insert-heading heading)
@@ -670,7 +763,11 @@ Searches existing TODOs for the project root path."
               (lambda (_ignore-auto _noconfirm)
                 (org-roam-todo-list-refresh)))
   (setq-local bookmark-make-record-function
-              #'org-roam-todo-list--bookmark-make-record))
+              #'org-roam-todo-list--bookmark-make-record)
+  ;; Start auto-refresh timer for agent status updates
+  (org-roam-todo-list--start-auto-refresh)
+  ;; Stop timer when buffer is killed
+  (add-hook 'kill-buffer-hook #'org-roam-todo-list--stop-auto-refresh nil t))
 
 ;; Evil mode support: use emacs state like magit does
 ;; This allows TAB to work for section toggling without evil interference
