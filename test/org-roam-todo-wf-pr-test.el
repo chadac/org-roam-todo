@@ -1,0 +1,842 @@
+;;; org-roam-todo-wf-pr-test.el --- Pull request workflow tests -*- lexical-binding: t; -*-
+
+;; Author: Claude Code
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (ert "1.0") (mocker "0.5"))
+
+;;; Commentary:
+;; Tests for the pull-request workflow which provides forge-based PR integration.
+;;
+;; Workflow: draft -> active -> ci -> ready -> review -> done
+;; - draft: TODO exists, no work started
+;; - active: Worktree created, work in progress
+;; - ci: Draft PR created, waiting for CI to pass
+;; - ready: CI passed, PR ready for human review
+;; - review: PR submitted for external review
+;; - done: PR merged, cleaned up
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'org-roam-todo-wf)
+(require 'org-roam-todo-wf-actions)
+(require 'org-roam-todo-wf-test-utils)
+
+;; Try to load mocker
+(condition-case nil
+    (require 'mocker)
+  (error
+   (message "Warning: mocker.el not available. Some tests will be skipped.")))
+
+;; Mock forge types for testing
+(cl-defstruct (org-roam-todo-wf-pr-test--mock-pullreq
+               (:constructor make-org-roam-todo-wf-pr-test--mock-pullreq))
+  "Mock pullreq struct for testing."
+  (state 'open)
+  (draft-p nil)
+  (their-id "PR123")
+  (number 42))
+
+(cl-defstruct (org-roam-todo-wf-pr-test--mock-github-repo
+               (:constructor make-org-roam-todo-wf-pr-test--mock-github-repo))
+  "Mock GitHub repository struct for testing.
+Named with 'github' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
+  (remote "origin")
+  (owner "test-owner")
+  (name "test-repo"))
+
+(cl-defstruct (org-roam-todo-wf-pr-test--mock-gitlab-repo
+               (:constructor make-org-roam-todo-wf-pr-test--mock-gitlab-repo))
+  "Mock GitLab repository struct for testing.
+Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
+  (remote "origin")
+  (owner "test-owner")
+  (name "test-repo")
+  (forge-id 12345))
+
+;; Make oref work with our mock structs
+(defun org-roam-todo-wf-pr-test--oref-advice (orig-fn obj slot)
+  "Advice to handle mock objects in oref calls."
+  (cond
+   ((org-roam-todo-wf-pr-test--mock-pullreq-p obj)
+    (pcase slot
+      ('state (org-roam-todo-wf-pr-test--mock-pullreq-state obj))
+      ('draft-p (org-roam-todo-wf-pr-test--mock-pullreq-draft-p obj))
+      ('their-id (org-roam-todo-wf-pr-test--mock-pullreq-their-id obj))
+      ('number (org-roam-todo-wf-pr-test--mock-pullreq-number obj))))
+   ((org-roam-todo-wf-pr-test--mock-github-repo-p obj)
+    (pcase slot
+      ('remote (org-roam-todo-wf-pr-test--mock-github-repo-remote obj))
+      ('owner (org-roam-todo-wf-pr-test--mock-github-repo-owner obj))
+      ('name (org-roam-todo-wf-pr-test--mock-github-repo-name obj))))
+   ((org-roam-todo-wf-pr-test--mock-gitlab-repo-p obj)
+    (pcase slot
+      ('remote (org-roam-todo-wf-pr-test--mock-gitlab-repo-remote obj))
+      ('owner (org-roam-todo-wf-pr-test--mock-gitlab-repo-owner obj))
+      ('name (org-roam-todo-wf-pr-test--mock-gitlab-repo-name obj))
+      ('forge-id (org-roam-todo-wf-pr-test--mock-gitlab-repo-forge-id obj))))
+   (t (funcall orig-fn obj slot))))
+
+;;; ============================================================
+;;; Workflow Definition Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-workflow-registered ()
+  "Test that pull-request workflow is registered after requiring the module."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should wf)
+    (should (eq 'pull-request (org-roam-todo-workflow-name wf)))))
+
+(ert-deftest wf-pr-test-workflow-statuses ()
+  "Test that pull-request workflow has correct statuses."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should wf)
+    (should (equal '("draft" "active" "ci" "ready" "review" "done")
+                   (org-roam-todo-workflow-statuses wf)))))
+
+(ert-deftest wf-pr-test-workflow-allows-backward ()
+  "Test that pull-request workflow allows regressing from ci and ready."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should wf)
+    (let ((config (org-roam-todo-workflow-config wf)))
+      (should (member 'ci (plist-get config :allow-backward)))
+      (should (member 'ready (plist-get config :allow-backward))))))
+
+;;; ============================================================
+;;; Hook Registration Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-has-enter-active-hook ()
+  "Test that pull-request workflow has :on-enter-active hooks."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :on-enter-active hooks))))
+
+(ert-deftest wf-pr-test-has-validate-ci-hook ()
+  "Test that pull-request workflow has :validate-ci hooks."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :validate-ci hooks))))
+
+(ert-deftest wf-pr-test-has-enter-ci-hook ()
+  "Test that pull-request workflow has :on-enter-ci hooks."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :on-enter-ci hooks))))
+
+(ert-deftest wf-pr-test-has-enter-ready-hook ()
+  "Test that pull-request workflow has :on-enter-ready hooks."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :on-enter-ready hooks))))
+
+(ert-deftest wf-pr-test-has-enter-done-hook ()
+  "Test that pull-request workflow has :on-enter-done hooks."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :on-enter-done hooks))))
+
+;;; ============================================================
+;;; Transition Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-valid-forward-transitions ()
+  "Test valid forward transitions in pull-request workflow."
+  :tags '(:unit :wf :pr :transitions)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should (org-roam-todo-wf--valid-transition-p wf "draft" "active"))
+    (should (org-roam-todo-wf--valid-transition-p wf "active" "ci"))
+    (should (org-roam-todo-wf--valid-transition-p wf "ci" "ready"))
+    (should (org-roam-todo-wf--valid-transition-p wf "ready" "review"))
+    (should (org-roam-todo-wf--valid-transition-p wf "review" "done"))))
+
+(ert-deftest wf-pr-test-backward-from-ci ()
+  "Test backward transition from ci to active is allowed."
+  :tags '(:unit :wf :pr :transitions)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should (org-roam-todo-wf--valid-transition-p wf "ci" "active"))))
+
+(ert-deftest wf-pr-test-backward-from-ready ()
+  "Test backward transition from ready to ci is allowed."
+  :tags '(:unit :wf :pr :transitions)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should (org-roam-todo-wf--valid-transition-p wf "ready" "ci"))))
+
+(ert-deftest wf-pr-test-backward-from-review-not-allowed ()
+  "Test backward transition from review is NOT allowed."
+  :tags '(:unit :wf :pr :transitions)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should-not (org-roam-todo-wf--valid-transition-p wf "review" "ready"))))
+
+(ert-deftest wf-pr-test-rejected-always-available ()
+  "Test that rejected is always available from any status."
+  :tags '(:unit :wf :pr :transitions)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
+    (should (org-roam-todo-wf--valid-transition-p wf "draft" "rejected"))
+    (should (org-roam-todo-wf--valid-transition-p wf "active" "rejected"))
+    (should (org-roam-todo-wf--valid-transition-p wf "ci" "rejected"))
+    (should (org-roam-todo-wf--valid-transition-p wf "ready" "rejected"))
+    (should (org-roam-todo-wf--valid-transition-p wf "review" "rejected"))))
+
+;;; ============================================================
+;;; Helper Function Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-get-target-branch-name-strips-remote ()
+  "Test get-target-branch-name strips remote prefix."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (todo (list :worktree-path "/tmp/test")))
+    (should (string= "main"
+                     (org-roam-todo-wf-pr--get-target-branch-name todo wf)))))
+
+(ert-deftest wf-pr-test-get-target-branch-name-defaults-to-main ()
+  "Test get-target-branch-name defaults to main when no target set."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config nil))
+         (todo (list :worktree-path "/tmp/test")))
+    (should (string= "main"
+                     (org-roam-todo-wf-pr--get-target-branch-name todo wf)))))
+
+;;; ============================================================
+;;; Forge Type Detection Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-repo-type-detects-github ()
+  "Test repo-type correctly identifies GitHub repositories."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo)))
+    (should (eq :github (org-roam-todo-wf-pr--repo-type mock-repo)))))
+
+(ert-deftest wf-pr-test-repo-type-detects-gitlab ()
+  "Test repo-type correctly identifies GitLab repositories."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((mock-repo (make-org-roam-todo-wf-pr-test--mock-gitlab-repo)))
+    (should (eq :gitlab (org-roam-todo-wf-pr--repo-type mock-repo)))))
+
+(ert-deftest wf-pr-test-repo-type-returns-repo-for-unknown ()
+  "Test repo-type returns the repo itself for unknown types."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  ;; Use the pullreq mock as an "unknown" type
+  (let ((unknown-obj (make-org-roam-todo-wf-pr-test--mock-pullreq)))
+    (should (eq unknown-obj (org-roam-todo-wf-pr--repo-type unknown-obj)))))
+
+;;; ============================================================
+;;; create-draft-pr Tests (mocking forge)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-create-draft-pr ()
+  "Test create-draft-pr creates a draft PR using forge."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-repo-" t))
+         (wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow wf))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (pr-created nil)
+         (draft-value nil))
+    (unwind-protect
+        (progn
+          (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+          (mocker-let
+              ((org-roam-todo-prop (event prop)
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                   :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "TITLE"))
+                   :output "Add new feature")
+                  (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+                   :output nil)))
+               (org-roam-todo-wf-pr--get-forge-repo (path)
+                 ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
+               (forge--rest (repo method endpoint data &rest args)
+                 ((:input-matcher
+                   (lambda (r m e d &rest a)
+                     (when (and (string= m "POST")
+                                (string-match-p "pulls" e))
+                       (setq pr-created t)
+                       (setq draft-value (alist-get 'draft d)))
+                     t)
+                   :output nil))))
+            (org-roam-todo-wf-pr--create-draft-pr event)
+            (should pr-created)
+            (should (eq t draft-value))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice)
+      (delete-directory temp-dir t))))
+
+(ert-deftest wf-pr-test-create-draft-pr-uses-target ()
+  "Test create-draft-pr uses the correct base branch."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-repo-" t))
+         (wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/develop")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow wf))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (base-used nil))
+    (unwind-protect
+        (progn
+          (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+          (mocker-let
+              ((org-roam-todo-prop (event prop)
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                   :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "TITLE"))
+                   :output "Add new feature")
+                  (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+                   :output nil)))
+               (org-roam-todo-wf-pr--get-forge-repo (path)
+                 ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
+               (forge--rest (repo method endpoint data &rest args)
+                 ((:input-matcher
+                   (lambda (r m e d &rest a)
+                     (setq base-used (alist-get 'base d))
+                     t)
+                   :output nil))))
+            (org-roam-todo-wf-pr--create-draft-pr event)
+            (should (string= "develop" base-used))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice)
+      (delete-directory temp-dir t))))
+
+(ert-deftest wf-pr-test-create-draft-pr-gitlab ()
+  "Test create-draft-pr uses GitLab API for GitLab repositories."
+  :tags '(:unit :wf :pr :forge :gitlab)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-repo-" t))
+         (wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow wf))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-gitlab-repo))
+         (mr-created nil)
+         (title-used nil))
+    (unwind-protect
+        (progn
+          (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+          (mocker-let
+              ((org-roam-todo-prop (event prop)
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                   :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "TITLE"))
+                   :output "Add new feature")
+                  (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+                   :output nil)))
+               (org-roam-todo-wf-pr--get-forge-repo (path)
+                 ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
+               (forge--glab-post (repo endpoint data &rest args)
+                 ((:input-matcher
+                   (lambda (r e d &rest a)
+                     (when (string-match-p "merge_requests" e)
+                       (setq mr-created t)
+                       (setq title-used (alist-get 'title d)))
+                     t)
+                   :output nil))))
+            (org-roam-todo-wf-pr--create-draft-pr event)
+            (should mr-created)
+            ;; GitLab uses "Draft: " prefix for draft MRs
+            (should (string-match-p "^Draft: " title-used))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice)
+      (delete-directory temp-dir t))))
+
+;;; ============================================================
+;;; mark-pr-ready Tests (mocking forge)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-mark-pr-ready ()
+  "Test mark-pr-ready converts draft PR to ready using forge."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :draft-p t))
+         (draft-set-to nil))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-prop (event prop)
+               ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                 :output "/tmp/test-repo")))
+             (org-roam-todo-wf-pr--get-forge-repo (path)
+               ((:input '("/tmp/test-repo") :output mock-repo)))
+             (org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq)))
+             (forge--set-topic-draft (repo topic value)
+               ((:input-matcher
+                 (lambda (r t v)
+                   (setq draft-set-to v)
+                   t)
+                 :output nil))))
+          (org-roam-todo-wf-pr--mark-pr-ready event)
+          (should-not draft-set-to))  ;; nil means "not draft" = ready
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-mark-pr-ready-no-pr-error ()
+  "Test mark-pr-ready errors when no PR exists."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo)))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-forge-repo (path)
+           ((:input '("/tmp/test-repo") :output mock-repo)))
+         (org-roam-todo-wf-pr--get-pullreq (path)
+           ((:input '("/tmp/test-repo") :output nil))))
+      (should-error (org-roam-todo-wf-pr--mark-pr-ready event)
+                    :type 'user-error))))
+
+;;; ============================================================
+;;; get-pr-state Tests (mocking forge)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-get-pr-state-merged ()
+  "Test get-pr-state returns merged when PR is merged."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :state 'merged)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq))))
+          (should (eq 'merged (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-get-pr-state-open ()
+  "Test get-pr-state returns open when PR is still open."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :state 'open)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq))))
+          (should (eq 'open (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-get-pr-state-rejected ()
+  "Test get-pr-state returns rejected when PR is closed without merge."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :state 'rejected)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq))))
+          (should (eq 'rejected (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-get-pr-state-no-pr ()
+  "Test get-pr-state returns nil when no PR exists."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (mocker-let
+      ((org-roam-todo-wf-pr--get-pullreq (path)
+         ((:input '("/tmp/test-repo") :output nil))))
+    (should-not (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
+
+;;; ============================================================
+;;; request-reviewers Tests (mocking forge)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-request-reviewers ()
+  "Test request-reviewers adds reviewers to PR via forge."
+  :tags '(:unit :wf :pr :forge)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow
+              :config '(:reviewers ("alice" "bob"))))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow wf))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq))
+         (reviewers-requested nil))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-forge-repo (path)
+           ((:input '("/tmp/test-repo") :output mock-repo)))
+         (org-roam-todo-wf-pr--get-pullreq (path)
+           ((:input '("/tmp/test-repo") :output mock-pullreq)))
+         (forge--set-topic-review-requests (repo topic reviewers)
+           ((:input-matcher
+             (lambda (r t revs)
+               (setq reviewers-requested revs)
+               t)
+             :output nil))))
+      (org-roam-todo-wf-pr--request-reviewers event)
+      (should reviewers-requested)
+      (should (member "alice" reviewers-requested))
+      (should (member "bob" reviewers-requested)))))
+
+(ert-deftest wf-pr-test-request-reviewers-no-reviewers ()
+  "Test request-reviewers does nothing when no reviewers configured."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config nil))
+         (event (make-org-roam-todo-event
+                 :todo (list :worktree-path "/tmp/test-repo")
+                 :workflow wf)))
+    ;; Should not error even without reviewers
+    (should-not (org-roam-todo-wf-pr--request-reviewers event))))
+
+;;; ============================================================
+;;; require-ci-pass Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-require-ci-pass-without-magit-forge-ci ()
+  "Test require-ci-pass passes when magit-forge-ci is not available."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  ;; Ensure magit-forge-ci is not loaded for this test
+  (let ((event (make-org-roam-todo-event
+                :todo (list :worktree-path "/tmp/test-repo"))))
+    ;; When magit-forge-ci is not available, should pass (nil = no error)
+    (unwind-protect
+        (progn
+          ;; Temporarily unload magit-forge-ci if loaded
+          (when (featurep 'magit-forge-ci)
+            (unload-feature 'magit-forge-ci t))
+          (should-not (org-roam-todo-wf-pr--require-ci-pass event)))
+      ;; Re-require if it was loaded before
+      (require 'magit-forge-ci nil t))))
+
+(ert-deftest wf-pr-test-require-ci-pass-with-success ()
+  "Test require-ci-pass passes when CI checks succeed."
+  :tags '(:unit :wf :pr :validation :ci)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  ;; Only run if magit-forge-ci would be available
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-prop (event prop)
+               ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                 :output "/tmp/test-repo")))
+             (featurep (feature)
+               ((:input '(magit-forge-ci) :output t)))
+             (fboundp (sym)
+               ((:input-matcher (lambda (s) t) :output t :min-occur 0 :max-occur nil)))
+             (org-roam-todo-wf-pr--get-forge-repo (path)
+               ((:input '("/tmp/test-repo") :output mock-repo)))
+             (org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq)))
+             (magit-forge-ci--get-checks-via-gh-cli (owner name pr-number)
+               ((:input-matcher (lambda (&rest _) t)
+                 :output '(((state . "success"))))))
+             (magit-forge-ci--compute-overall-status (checks)
+               ((:input-matcher (lambda (&rest _) t) :output "success"))))
+          ;; Should pass (return nil) when CI is successful
+          (should-not (org-roam-todo-wf-pr--require-ci-pass event)))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-require-ci-pass-with-failure ()
+  "Test require-ci-pass fails when CI checks fail."
+  :tags '(:unit :wf :pr :validation :ci)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-prop (event prop)
+               ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                 :output "/tmp/test-repo")))
+             (featurep (feature)
+               ((:input '(magit-forge-ci) :output t)))
+             (fboundp (sym)
+               ((:input-matcher (lambda (s) t) :output t :min-occur 0 :max-occur nil)))
+             (org-roam-todo-wf-pr--get-forge-repo (path)
+               ((:input '("/tmp/test-repo") :output mock-repo)))
+             (org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq)))
+             (magit-forge-ci--get-checks-via-gh-cli (owner name pr-number)
+               ((:input-matcher (lambda (&rest _) t)
+                 :output '(((state . "failure"))))))
+             (magit-forge-ci--compute-overall-status (checks)
+               ((:input-matcher (lambda (&rest _) t) :output "failure"))))
+          ;; Should fail when CI has failures
+          (should-error (org-roam-todo-wf-pr--require-ci-pass event)
+                        :type 'user-error))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-require-ci-pass-with-pending ()
+  "Test require-ci-pass fails when CI checks are pending."
+  :tags '(:unit :wf :pr :validation :ci)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-prop (event prop)
+               ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                 :output "/tmp/test-repo")))
+             (featurep (feature)
+               ((:input '(magit-forge-ci) :output t)))
+             (fboundp (sym)
+               ((:input-matcher (lambda (s) t) :output t :min-occur 0 :max-occur nil)))
+             (org-roam-todo-wf-pr--get-forge-repo (path)
+               ((:input '("/tmp/test-repo") :output mock-repo)))
+             (org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq)))
+             (magit-forge-ci--get-checks-via-gh-cli (owner name pr-number)
+               ((:input-matcher (lambda (&rest _) t)
+                 :output '(((state . "pending"))))))
+             (magit-forge-ci--compute-overall-status (checks)
+               ((:input-matcher (lambda (&rest _) t) :output "pending"))))
+          ;; Should fail when CI is pending
+          (should-error (org-roam-todo-wf-pr--require-ci-pass event)
+                        :type 'user-error))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-has-validate-ready-hook ()
+  "Test that pull-request workflow has :validate-ready hook."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :validate-ready hooks))))
+
+;;; ============================================================
+;;; require-user-approval Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-require-user-approval-approved ()
+  "Test require-user-approval passes when :approved is set."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "APPROVED"))
+             :output t))))
+      ;; Should not error when approved
+      (should-not (org-roam-todo-wf-pr--require-user-approval event)))))
+
+(ert-deftest wf-pr-test-require-user-approval-not-approved ()
+  "Test require-user-approval fails when :approved is not set."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :worktree-path "/tmp/test-repo"))))
+    ;; Should error when not approved
+    (should-error (org-roam-todo-wf-pr--require-user-approval event)
+                  :type 'user-error)))
+
+(ert-deftest wf-pr-test-require-user-approval-nil ()
+  "Test require-user-approval fails when :approved is explicitly nil."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :worktree-path "/tmp/test-repo"
+                             :approved nil))))
+    ;; Should error when explicitly nil
+    (should-error (org-roam-todo-wf-pr--require-user-approval event)
+                  :type 'user-error)))
+
+(ert-deftest wf-pr-test-has-validate-review-hook ()
+  "Test that pull-request workflow has :validate-review hook."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :validate-review hooks))))
+
+;;; ============================================================
+;;; require-pr-merged Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-require-pr-merged-merged ()
+  "Test require-pr-merged passes when PR is merged."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-pr-state (path)
+           ((:input '("/tmp/test-repo") :output 'merged))))
+      ;; Should not error when merged
+      (should-not (org-roam-todo-wf-pr--require-pr-merged event)))))
+
+(ert-deftest wf-pr-test-require-pr-merged-open ()
+  "Test require-pr-merged fails when PR is still open."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-pr-state (path)
+           ((:input '("/tmp/test-repo") :output 'open))))
+      ;; Should error when still open
+      (should-error (org-roam-todo-wf-pr--require-pr-merged event)
+                    :type 'user-error))))
+
+(ert-deftest wf-pr-test-require-pr-merged-rejected ()
+  "Test require-pr-merged fails when PR is closed without merging."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-pr-state (path)
+           ((:input '("/tmp/test-repo") :output 'rejected))))
+      ;; Should error when closed without merge
+      (should-error (org-roam-todo-wf-pr--require-pr-merged event)
+                    :type 'user-error))))
+
+(ert-deftest wf-pr-test-require-pr-merged-unknown ()
+  "Test require-pr-merged fails when PR state cannot be determined."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (org-roam-todo-wf-pr--get-pr-state (path)
+           ((:input '("/tmp/test-repo") :output nil))))
+      ;; Should error when state is unknown
+      (should-error (org-roam-todo-wf-pr--require-pr-merged event)
+                    :type 'user-error))))
+
+(ert-deftest wf-pr-test-has-validate-done-hook ()
+  "Test that pull-request workflow has :validate-done hook."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf)))
+    (should (assq :validate-done hooks))))
+
+(provide 'org-roam-todo-wf-pr-test)
+;;; org-roam-todo-wf-pr-test.el ends here

@@ -15,3 +15,10 @@
 
 # Local development
 .dir-locals-2.el
+
+# Cask files
+.cask
+
+# Claude agent files
+.claude/
+claude-agent.log
