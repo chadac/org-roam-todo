@@ -105,7 +105,6 @@ Lifecycle:
 
     ;; When entering done: merge, push, and cleanup everything
     (:on-enter-done . (org-roam-todo-wf--ff-merge-to-target
-                       org-roam-todo-wf-local--push-main
                        org-roam-todo-wf--cleanup-all)))
 
   :config
