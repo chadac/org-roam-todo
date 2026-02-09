@@ -392,13 +392,16 @@ Requirements:
     (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready))
 
     ;; Validation before review: user must approve their own changes
-    (:validate-review . (org-roam-todo-wf-pr--require-user-approval))
+    ;; Also: only AI agents (CI automation) can advance to review
+    (:validate-review . (org-roam-todo-wf-pr--require-user-approval
+                         org-roam-todo-wf--only-ai))
 
     ;; When entering review: request reviewers
     (:on-enter-review . (org-roam-todo-wf-pr--on-enter-review))
 
-    ;; Validation before done: PR must be merged
-    (:validate-done . (org-roam-todo-wf-pr--require-pr-merged))
+    ;; Validation before done: PR must be merged, and only humans can approve
+    (:validate-done . (org-roam-todo-wf-pr--require-pr-merged
+                       org-roam-todo-wf--only-human))
 
     ;; When entering done: cleanup everything (agent, buffers, worktree)
     (:on-enter-done . (org-roam-todo-wf--cleanup-all)))

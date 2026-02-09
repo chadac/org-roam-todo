@@ -387,7 +387,7 @@ Returns plist with :main-sha, :feature-sha, and :filename."
     workflow       ; The workflow struct
     old-status     ; Previous status (for status-changed events)
     new-status     ; New status (for status-changed events)
-    extra))        ; Plist for event-specific data
+    actor))        ; Symbol: 'human or 'ai - who is performing the action
 
 (defvar org-roam-todo-wf-test--mock-workflow nil
   "Mock workflow for testing.")

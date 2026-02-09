@@ -34,7 +34,8 @@
   todo           ; The TODO plist (file, project, status, worktree-path, etc.)
   workflow       ; The workflow struct
   old-status     ; Previous status (for status-changed events)
-  new-status)     ; New status (for status-changed events)
+  new-status     ; New status (for status-changed events)
+  actor)         ; Symbol: 'human or 'ai - who is performing the action
 
 ;;; ============================================================
 ;;; Workflow Registry
@@ -158,8 +159,9 @@ Returns \\='completed or \\='stopped."
 ;;; Status Change
 ;;; ============================================================
 
-(defun org-roam-todo-wf--change-status (todo new-status)
+(defun org-roam-todo-wf--change-status (todo new-status &optional actor)
   "Change TODO to NEW-STATUS, firing appropriate events.
+ACTOR is who is performing the action: `human' (default) or `ai'.
 
 Transition flow:
 1. Validate transition is allowed (state machine rules)
@@ -175,7 +177,8 @@ Transition flow:
                  :todo todo
                  :workflow workflow
                  :old-status old-status
-                 :new-status new-status)))
+                 :new-status new-status
+                 :actor (or actor 'human))))
 
     ;; 1. Validate transition is allowed by state machine
     (unless (org-roam-todo-wf--valid-transition-p workflow old-status new-status)
@@ -268,7 +271,39 @@ This is a stub - the real implementation will query org-roam."
   ;; TODO: Implement actual TODO retrieval
   nil)
 
+;;; ============================================================
+;;; Actor-Based Permission Checks
+;;; ============================================================
 
+(defun org-roam-todo-wf--only-human (event)
+  "Validation hook that blocks AI agents.
+Use in :validate-STATUS hooks for transitions that require human judgment.
+Reads the actor from EVENT (set by `org-roam-todo-wf--change-status').
+
+Example uses:
+- Approving code review (human must review before merging)
+- Signing off on releases
+- Security-sensitive status changes
+
+When an AI agent attempts this transition, signals a user-error with
+a clear message indicating human action is required."
+  (when (eq (org-roam-todo-event-actor event) 'ai)
+    (user-error "This transition requires human action (current: AI agent)")))
+
+(defun org-roam-todo-wf--only-ai (event)
+  "Validation hook that blocks human interaction.
+Use in :validate-STATUS hooks for transitions that should be automated.
+Reads the actor from EVENT (set by `org-roam-todo-wf--change-status').
+
+Example uses:
+- CI completion (only the CI system should advance)
+- Automated deployments
+- Bot-managed status changes
+
+When a human attempts this transition, signals a user-error with
+a clear message indicating the transition is automated."
+  (unless (eq (org-roam-todo-event-actor event) 'ai)
+    (user-error "This transition is automated (current: human)")))
 
 (provide 'org-roam-todo-wf)
 ;;; org-roam-todo-wf.el ends here

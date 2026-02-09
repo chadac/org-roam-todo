@@ -134,9 +134,9 @@ Test task description.
         (mocker-let
             ((org-roam-todo-wf-tools--get-todo (id)
                ((:input-matcher #'always :output todo)))
-             (org-roam-todo-wf--change-status (todo new-status)
+             (org-roam-todo-wf--change-status (todo new-status actor)
                ((:input-matcher #'always
-                 :output-generator (lambda (t s)
+                 :output-generator (lambda (t s a)
                                      (setq status-changed-to s)
                                      nil)))))
           (org-roam-todo-wf-tools-start nil)
@@ -156,7 +156,7 @@ Test task description.
         (mocker-let
             ((org-roam-todo-wf-tools--get-todo (id)
                ((:input-matcher #'always :output todo)))
-             (org-roam-todo-wf--change-status (todo new-status)
+             (org-roam-todo-wf--change-status (todo new-status actor)
                ((:input-matcher #'always :output nil))))
           (let ((result (org-roam-todo-wf-tools-start nil)))
             (should (stringp result))
@@ -188,9 +188,9 @@ Test task description.
                ((:input-matcher #'always :output todo)))
              (org-roam-todo-wf--get-workflow (todo)
                ((:input-matcher #'always :output mock-workflow)))
-             (org-roam-todo-wf--change-status (todo status)
+             (org-roam-todo-wf--change-status (todo status actor)
                ((:input-matcher #'always
-                 :output-generator (lambda (t s)
+                 :output-generator (lambda (t s a)
                                      (setq new-status s)
                                      nil)))))
           (org-roam-todo-wf-tools-advance nil)
@@ -244,9 +244,9 @@ Test task description.
                ((:input-matcher #'always :output todo)))
              (org-roam-todo-wf--get-workflow (todo)
                ((:input-matcher #'always :output mock-workflow)))
-             (org-roam-todo-wf--change-status (todo status)
+             (org-roam-todo-wf--change-status (todo status actor)
                ((:input-matcher #'always
-                 :output-generator (lambda (t s)
+                 :output-generator (lambda (t s a)
                                      (setq new-status s)
                                      nil)))))
           (org-roam-todo-wf-tools-regress nil)
@@ -317,9 +317,9 @@ Test task description.
         (mocker-let
             ((org-roam-todo-wf-tools--get-todo (id)
                ((:input-matcher #'always :output todo)))
-             (org-roam-todo-wf--change-status (todo status)
+             (org-roam-todo-wf--change-status (todo status actor)
                ((:input-matcher #'always
-                 :output-generator (lambda (t s)
+                 :output-generator (lambda (t s a)
                                      (setq new-status s)
                                      nil))))
              (org-roam-todo-mcp-add-progress (msg &optional todo-id)
@@ -342,7 +342,7 @@ Test task description.
         (mocker-let
             ((org-roam-todo-wf-tools--get-todo (id)
                ((:input-matcher #'always :output todo)))
-             (org-roam-todo-wf--change-status (todo status)
+             (org-roam-todo-wf--change-status (todo status actor)
                ((:input-matcher #'always :output nil)))
              (org-roam-todo-mcp-add-progress (msg &optional todo-id)
                ((:input-matcher #'always

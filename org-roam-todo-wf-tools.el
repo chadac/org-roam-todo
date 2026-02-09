@@ -101,7 +101,7 @@ Creates the worktree via :on-enter-active hook."
     (let ((status (plist-get todo :status)))
       (unless (string= status "draft")
         (user-error "Can only start TODOs in draft status (current: %s)" status))
-      (org-roam-todo-wf--change-status todo "active")
+      (org-roam-todo-wf--change-status todo "active" 'ai)
       (format "Started TODO: %s" (plist-get todo :title)))))
 
 (defun org-roam-todo-wf-tools-stage (description &optional todo-id)
@@ -228,7 +228,7 @@ TODO-ID can be a file path, title, or ID. Defaults to current TODO."
       (unless (and idx (< idx (1- (length statuses))))
         (user-error "Cannot advance from '%s' - already at terminal status" current))
       (let ((next (nth (1+ idx) statuses)))
-        (org-roam-todo-wf--change-status todo next)
+        (org-roam-todo-wf--change-status todo next 'ai)
         (format "Advanced: %s -> %s" current next)))))
 
 (defun org-roam-todo-wf-tools-regress (&optional todo-id)
@@ -250,7 +250,7 @@ TODO-ID can be a file path, title, or ID. Defaults to current TODO."
       (unless (member (intern current) allow-backward)
         (user-error "Cannot regress from '%s' - not allowed by workflow" current))
       (let ((prev (nth (1- idx) statuses)))
-        (org-roam-todo-wf--change-status todo prev)
+        (org-roam-todo-wf--change-status todo prev 'ai)
         (format "Regressed: %s -> %s" current prev)))))
 
 (defun org-roam-todo-wf-tools-reject (reason &optional todo-id)
@@ -265,7 +265,7 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
      (format "REJECTED: %s" reason)
      (plist-get todo :file))
     ;; Change status to rejected
-    (org-roam-todo-wf--change-status todo "rejected")
+    (org-roam-todo-wf--change-status todo "rejected" 'ai)
     (format "Rejected TODO: %s\nReason: %s" (plist-get todo :title) reason)))
 
 (defun org-roam-todo-wf-tools-delegate (&optional todo-id)
