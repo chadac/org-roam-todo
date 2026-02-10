@@ -386,5 +386,50 @@
             (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil))))
       (should-not (org-roam-todo-wf--get-target-branch-from-event event workflow)))))
+
+(ert-deftest wf-validate-test-get-target-branch-from-event-uses-project-config ()
+  "Test get-target-branch-from-event uses project config when PROJECT_NAME is set."
+  :tags '(:unit :wf :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (let* ((workflow (make-org-roam-todo-workflow
+                    :config '(:rebase-target "origin/main")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow workflow))
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "origin/develop")))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output "my-project")
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+             :output nil))))
+      ;; Should use project config "origin/develop", not workflow "origin/main"
+      (should (string= "origin/develop"
+                       (org-roam-todo-wf--get-target-branch-from-event event workflow))))))
+
+(ert-deftest wf-validate-test-get-target-branch-from-event-todo-overrides-project-config ()
+  "Test get-target-branch-from-event: TODO TARGET_BRANCH overrides project config."
+  :tags '(:unit :wf :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (let* ((workflow (make-org-roam-todo-workflow
+                    :config '(:rebase-target "origin/main")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")
+                 :workflow workflow))
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "origin/develop")))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output "my-project")
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+             :output "origin/feature"))))
+      ;; Should use TODO's TARGET_BRANCH, not project config
+      (should (string= "origin/feature"
+                       (org-roam-todo-wf--get-target-branch-from-event event workflow))))))
+
 (provide 'org-roam-todo-wf-validate-test)
 ;;; org-roam-todo-wf-validate-test.el ends here
