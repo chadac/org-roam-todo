@@ -257,6 +257,54 @@ Returns one of: merged, rejected (closed), open, or nil if no PR exists."
           (funcall (intern "eieio-oref") pullreq 'state)
         (error nil)))))
 
+;;; ============================================================
+;;; Watcher Poll Functions (for org-roam-todo-wf-watch)
+;;; ============================================================
+
+(defun org-roam-todo-wf-pr--check-ci-status (todo)
+  "Check CI status for TODO's PR.
+Returns \\='success, \\='failure, or \\='pending.
+Used by watchers to poll CI status and trigger auto-advancement."
+  (let ((worktree-path (plist-get todo :worktree-path)))
+    (if (and worktree-path
+             (featurep 'magit-forge-ci)
+             (fboundp 'magit-forge-ci--get-checks-via-gh-cli)
+             (fboundp 'magit-forge-ci--compute-overall-status))
+        (condition-case nil
+            (let* ((default-directory worktree-path)
+                   (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
+                   (pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
+              (if pullreq
+                  (let* ((owner (org-roam-todo-wf-pr--slot repo 'owner))
+                         (name (org-roam-todo-wf-pr--slot repo 'name))
+                         (pr-number (org-roam-todo-wf-pr--slot pullreq 'number))
+                         (checks (magit-forge-ci--get-checks-via-gh-cli owner name pr-number))
+                         (status (magit-forge-ci--compute-overall-status checks)))
+                    (pcase status
+                      ("success" 'success)
+                      ("failure" 'failure)
+                      (_ 'pending)))
+                ;; No PR yet - still pending
+                'pending))
+          (error 'pending))
+      ;; No CI integration available - assume pending (manual check needed)
+      'pending)))
+
+(defun org-roam-todo-wf-pr--check-pr-merged (todo)
+  "Check if TODO's PR has been merged.
+Returns \\='success if merged, \\='failure if closed without merge, \\='pending if open.
+Used by watchers to poll merge status and trigger auto-advancement."
+  (let ((worktree-path (plist-get todo :worktree-path)))
+    (if worktree-path
+        (condition-case nil
+            (let ((state (org-roam-todo-wf-pr--get-pr-state worktree-path)))
+              (pcase state
+                ('merged 'success)
+                ('rejected 'failure)
+                (_ 'pending)))
+          (error 'pending))
+      'pending)))
+
 (defun org-roam-todo-wf-pr--require-ci-pass (event)
   "Validate: CI checks have passed for the PR.
 EVENT is the workflow event context.
@@ -409,11 +457,31 @@ Requirements:
   :config
   '(:rebase-target "origin/main"
     :draft-pr t
-    :auto-advance-on-ci-pass nil     ; manual advancement for now
-    :auto-advance-on-merge nil       ; manual advancement for now
     :reviewers nil                   ; set per-project
     :labels nil                      ; set per-project
-    :allow-backward (ci ready)))     ; can regress for fixes
+    :allow-backward (ci ready)       ; can regress for fixes
+
+    ;; Watchers for async status monitoring
+    :watchers
+    (;; When in "ci" status, poll for CI completion
+     (:status "ci"
+      :poll-fn org-roam-todo-wf-pr--check-ci-status
+      :interval 60                    ; check every minute
+      :on-success (:advance "ready")  ; auto-advance when CI passes
+      :on-failure (:regress "active") ; regress on failure for fixes
+      :timeout 3600)                  ; stop polling after 1 hour
+
+     ;; When in "ci" status, watch for buffer changes (needs more work)
+     (:status "ci"
+      :type buffer-change
+      :on-change (:regress "active")) ; regress if files are modified
+
+     ;; When in "review" status, poll for PR merge
+     (:status "review"
+      :poll-fn org-roam-todo-wf-pr--check-pr-merged
+      :interval 120                   ; check every 2 minutes
+      :on-success (:advance "done")   ; auto-advance when merged
+      :timeout 86400))))
 
 (provide 'org-roam-todo-wf-pr)
 ;;; org-roam-todo-wf-pr.el ends here

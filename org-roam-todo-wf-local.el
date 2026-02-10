@@ -110,7 +110,14 @@ Lifecycle:
   :config
   '(:rebase-target "main"
     :push-after-merge t
-    :allow-backward (review)))  ; Can go back from review->active if issues found
+    :allow-backward (review)          ; Can go back from review->active if issues found
+
+    ;; Watchers for async status monitoring
+    :watchers
+    (;; When in "review" status, watch for buffer changes (needs more work)
+     (:status "review"
+      :type buffer-change
+      :on-change (:regress "active")))))
 
 (provide 'org-roam-todo-wf-local)
 ;;; org-roam-todo-wf-local.el ends here

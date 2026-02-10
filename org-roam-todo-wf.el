@@ -206,7 +206,11 @@ Transition flow:
     ;; 6. Fire enter hook (actions)
     (setf (org-roam-todo-event-type event)
           (intern (format ":on-enter-%s" new-status)))
-    (org-roam-todo-wf--dispatch-event event)))
+    (org-roam-todo-wf--dispatch-event event)
+
+    ;; 7. Start watchers for the new status (if org-roam-todo-wf-watch is loaded)
+    (when (fboundp 'org-roam-todo-wf-watch--on-status-changed)
+      (org-roam-todo-wf-watch--on-status-changed event))))
 
 ;;; ============================================================
 ;;; Workflow Resolution
