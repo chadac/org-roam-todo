@@ -291,12 +291,53 @@ Uses `org-roam-todo-all-criteria-complete-p' to check the TODO file."
 ;;; Git Worktree Actions
 ;;; ============================================================
 
+(defun org-roam-todo-wf--generate-dir-locals (worktree-path project-root)
+  "Generate .dir-locals.el in WORKTREE-PATH to configure agent permissions.
+Uses the rule-based permission system to:
+- Auto-allow Read for both worktree and project root (safe read-only access)
+- Auto-allow Edit/Write/lock/locks/edit/edits for the worktree
+- Auto-deny Edit/Write/lock/locks/edit/edits for the project root"
+  (let* ((dir-locals-file (expand-file-name ".dir-locals.el" worktree-path))
+         (worktree-normalized (file-name-as-directory
+                               (expand-file-name worktree-path)))
+         (project-root-normalized (file-name-as-directory
+                                   (expand-file-name project-root)))
+         (reject-message (format "You are in a worktree. Edit files here (%s), not in the main project."
+                                 worktree-path))
+         (system-prompt (format "You are working in a git worktree at %s. Only edit files within this worktree directory. The main project at %s is off-limits for editing."
+                                worktree-path project-root-normalized))
+         ;; Permission rules evaluated in order - first match wins
+         (permission-rules
+          `(;; Rule 1: Auto-allow Read/read_file for anywhere (safe read-only)
+            (:match (:tool-regex "^Read$\\|^mcp__emacs__read_file$")
+             :action :allow
+             :scope :session)
+            ;; Rule 2: Auto-allow editing tools for worktree path
+            (:match (:and (:tool-regex "^Edit$\\|^Write$\\|^mcp__emacs__lock$\\|^mcp__emacs__locks$\\|^mcp__emacs__edit$\\|^mcp__emacs__edits$")
+                          (:path-prefix ,worktree-normalized))
+             :action :allow
+             :scope :session)
+            ;; Rule 3: Auto-deny editing tools for project root
+            (:match (:and (:tool-regex "^Edit$\\|^Write$\\|^mcp__emacs__lock$\\|^mcp__emacs__locks$\\|^mcp__emacs__edit$\\|^mcp__emacs__edits$")
+                          (:path-prefix ,project-root-normalized))
+             :action :deny
+             :message ,reject-message)))
+         (dir-locals-content
+          `((nil . ((claude-agent-permission-policy . :rules)
+                    (claude-agent-permission-rules-local . ,permission-rules)
+                    (claude-agent-extra-system-prompt . ,system-prompt))))))
+    (with-temp-file dir-locals-file
+      (insert ";;; Directory Local Variables for worktree agent\n")
+      (insert ";;; For more information see (info \"(emacs) Directory Variables\")\n\n")
+      (pp dir-locals-content (current-buffer)))))
+
 (defun org-roam-todo-wf--ensure-worktree (event)
   "Ensure worktree exists for TODO in EVENT.
 Creates the worktree for an existing branch.  The branch should already
 exist (created by `org-roam-todo-wf--ensure-branch').
 
 If the branch doesn't exist, falls back to creating it with the worktree.
+Also generates a .dir-locals.el to configure agent permissions.
 Reads properties fresh from file via `org-roam-todo-prop'."
   (let* ((workflow (org-roam-todo-event-workflow event))
          ;; Read fresh from file
@@ -317,7 +358,11 @@ Reads properties fresh from file via `org-roam-todo-prop'."
                                     "worktree" "add"
                                     "-b" branch-name
                                     worktree-path
-                                    (or target "HEAD"))))))
+                                    (or target "HEAD"))))
+    ;; Generate .dir-locals.el for agent permissions (if worktree exists)
+    (when (and worktree-path project-root (file-directory-p worktree-path))
+      (org-roam-todo-wf--generate-dir-locals worktree-path project-root))))
+
 (defun org-roam-todo-wf--cleanup-worktree (event)
   "Clean up git worktree and branch for TODO in EVENT.
 Remove the worktree directory and force-delete the branch.

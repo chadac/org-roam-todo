@@ -542,5 +542,30 @@ CLEAN-P  - whether the worktree is clean (no uncommitted changes)"
   "Return t for any arguments. Useful as mocker input-matcher."
   t)
 
+;;; ============================================================
+;;; Mock Property Helpers
+;;; ============================================================
+
+(defun org-roam-todo-wf-test--make-prop-mock-specs (prop-alist)
+  "Create mocker specs for org-roam-todo-prop from PROP-ALIST.
+PROP-ALIST is an alist of (PROPERTY-NAME . VALUE) pairs.
+Returns a list of mocker record specs that:
+1. Match each specified property and return its value
+2. Return nil for any unspecified properties (catch-all)
+
+Example:
+  (org-roam-todo-wf-test--make-prop-mock-specs
+   \\='((\"PROJECT_ROOT\" . \"/tmp/project\")
+     (\"WORKTREE_PATH\" . \"/tmp/worktree\")))"
+  (append
+   ;; Specific property matchers
+   (mapcar (lambda (pair)
+             `(:input-matcher
+               (lambda (e p) (string= p ,(car pair)))
+               :output ,(cdr pair)))
+           prop-alist)
+   ;; Catch-all for any other properties - return nil
+   '((:input-matcher (lambda (e p) t) :output nil))))
+
 (provide 'org-roam-todo-wf-test-utils)
 ;;; org-roam-todo-wf-test-utils.el ends here

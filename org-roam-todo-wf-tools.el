@@ -269,6 +269,7 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
     (org-roam-todo-wf--change-status todo "rejected" 'ai)
     (format "Rejected TODO: %s\nReason: %s" (plist-get todo :title) reason)))
 
+
 (defun org-roam-todo-wf-tools-delegate (&optional todo-id)
   "Delegate a TODO to a Claude agent.
 Spawns an agent in the worktree.  The TODO must be in active status
@@ -377,6 +378,7 @@ Commit strategies:
 - :managed-commit: Validates only - agent must commit manually
 All automated commits use --no-gpg-sign."
           :function #'org-roam-todo-wf-tools-stage
+          :safe t
           :args ((description string :required "Description of all changes made")
                  (todo-id string "Optional: TODO file path, title, or ID")))
 
@@ -385,6 +387,7 @@ All automated commits use --no-gpg-sign."
 Moves the TODO forward through its workflow stages.
 Respects workflow validation hooks."
           :function #'org-roam-todo-wf-tools-advance
+          :safe t
           :args ((todo-id string "Optional: TODO file path, title, or ID")))
 
         (claude-mcp-deftool todo-regress
@@ -392,6 +395,7 @@ Respects workflow validation hooks."
 Moves the TODO back one stage.
 Only works if the workflow allows regression from the current status."
           :function #'org-roam-todo-wf-tools-regress
+          :safe t
           :args ((todo-id string "Optional: TODO file path, title, or ID")))
 
         (claude-mcp-deftool todo-reject
@@ -399,6 +403,7 @@ Only works if the workflow allows regression from the current status."
 Use this when a TODO should be abandoned without completion.
 Records the rejection reason in the TODO progress log."
           :function #'org-roam-todo-wf-tools-reject
+          :safe t
           :args ((reason string :required "Explanation for rejection")
                  (todo-id string "Optional: TODO file path, title, or ID")))
 

@@ -208,12 +208,14 @@
              :output nil)
             (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)))
+         ;; Mock the "remote get-url origin" check to return success (exit 0)
          (org-roam-todo-wf--git-run (dir &rest args)
-           ;; Mock the "remote get-url origin" check to return success (exit 0)
            ((:input-matcher
              (lambda (d &rest a)
                (and (string= d "/tmp/project")
-                    (member "remote" a)))
+                    (member "remote" a)
+                    (member "get-url" a)
+                    (member "origin" a)))
              :output '(0 . "git@github.com:test/test.git"))))
          (org-roam-todo-wf--git-run! (dir &rest args)
            ((:input-matcher

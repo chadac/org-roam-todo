@@ -398,10 +398,15 @@
              :output nil)
             (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)))
-         (file-directory-p (path)
-           ((:input '("/tmp/worktree") :output t))))
-      ;; Should return nil without calling git
-      (should-not (org-roam-todo-wf--ensure-worktree event)))))
+         ;; When worktree exists, generate-dir-locals is called
+         (org-roam-todo-wf--generate-dir-locals (worktree-path project-root)
+           ((:input '("/tmp/worktree" "/tmp/project") :output nil))))
+      ;; Use cl-letf for file-directory-p since it's a C primitive
+      ;; Use cl-letf for file-directory-p since it's a C primitive
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (path) (string= path "/tmp/worktree"))))
+        ;; Should return nil without calling git
+        (should-not (org-roam-todo-wf--ensure-worktree event))))))
 
 ;;; ============================================================
 ;;; require-target-clean Tests
