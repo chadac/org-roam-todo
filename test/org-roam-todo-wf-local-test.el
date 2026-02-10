@@ -165,11 +165,13 @@
   (let ((magit-opened nil))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ;; Order matches actual read order: WORKTREE_PATH, WORKTREE_BRANCH, TARGET_BRANCH
+           ;; Order matches actual read order: WORKTREE_PATH, WORKTREE_BRANCH, PROJECT_NAME, TARGET_BRANCH
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")
             (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
              :output "feature")
+            (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
             (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)))
          (magit-diff-range (range)
@@ -183,7 +185,6 @@
         (should magit-opened)
         (should (string-match-p "main" magit-opened))
         (should (string-match-p "feature" magit-opened))))))
-
 ;;; ============================================================
 ;;; push-main Tests
 ;;; ============================================================
@@ -200,11 +201,20 @@
                  :workflow wf)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ;; Order matches actual read order: PROJECT_ROOT, TARGET_BRANCH
+           ;; Order: PROJECT_ROOT, then get-target-branch-from-event reads PROJECT_NAME, TARGET_BRANCH
            ((:input-matcher (lambda (e p) (string= p "PROJECT_ROOT"))
              :output "/tmp/project")
+            (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
             (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)))
+         (org-roam-todo-wf--git-run (dir &rest args)
+           ;; Mock the "remote get-url origin" check to return success (exit 0)
+           ((:input-matcher
+             (lambda (d &rest a)
+               (and (string= d "/tmp/project")
+                    (member "remote" a)))
+             :output '(0 . "git@github.com:test/test.git"))))
          (org-roam-todo-wf--git-run! (dir &rest args)
            ((:input-matcher
              (lambda (d &rest a)
@@ -390,8 +400,10 @@ Uses a workflow without rebase-target since we have no remote."
             ;; Go back to main
             (org-roam-todo-wf-test--checkout repo-dir "main")
 
-            ;; Make target repo dirty (uncommitted file)
-            (org-roam-todo-wf-test--create-file repo-dir "dirty.txt" "uncommitted")
+            ;; Make target repo dirty by modifying a tracked file
+            ;; Note: -uno ignores untracked files, so we must modify README.md
+            (with-temp-file (expand-file-name "README.md" repo-dir)
+              (insert "Modified content\n"))
 
             ;; Try to validate done - should fail due to dirty target
             (let ((event (make-org-roam-todo-event

@@ -173,11 +173,12 @@ or excluded with `git update-index --assume-unchanged`."
 
 (defun org-roam-todo-wf-tools--branch-has-commits-p (todo)
   "Return non-nil if the current branch has commits ahead of the target.
-Uses the workflow's :rebase-target config from TODO to determine the base.
+Uses generic `org-roam-todo-wf--get-target-branch' for target resolution.
 Falls back to 'main' if the configured target doesn't exist."
   (let* ((workflow (org-roam-todo-wf--get-workflow todo))
-         (config (org-roam-todo-workflow-config workflow))
-         (configured-target (or (plist-get config :rebase-target) "main"))
+         ;; Use the generic function for target branch resolution
+         (configured-target (or (org-roam-todo-wf--get-target-branch todo workflow)
+                                "main"))
          ;; Use configured target if it exists, otherwise try 'main'
          (target (cond
                   ((org-roam-todo-wf-tools--ref-exists-p configured-target) configured-target)

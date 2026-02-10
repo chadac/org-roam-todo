@@ -129,7 +129,9 @@
                  :workflow wf)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)
             (:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
@@ -153,7 +155,9 @@
                  :workflow wf)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil)
             (:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
@@ -184,7 +188,9 @@
          (rebased-target nil))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output "feat/parent-branch")
             (:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
@@ -340,11 +346,12 @@
                  :workflow workflow)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output "feat/custom-branch"))))
       (should (string= "feat/custom-branch"
                        (org-roam-todo-wf--get-target-branch-from-event event workflow))))))
-
 (ert-deftest wf-validate-test-get-target-branch-fallback ()
   "Test get-target-branch-from-event falls back to workflow config."
   :tags '(:unit :wf :validation)
@@ -357,11 +364,12 @@
                  :workflow workflow)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil))))
       (should (string= "main"
                        (org-roam-todo-wf--get-target-branch-from-event event workflow))))))
-
 (ert-deftest wf-validate-test-get-target-branch-nil ()
   "Test get-target-branch-from-event returns nil when nothing configured."
   :tags '(:unit :wf :validation)
@@ -373,9 +381,10 @@
                  :workflow workflow)))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+           ((:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
              :output nil))))
       (should-not (org-roam-todo-wf--get-target-branch-from-event event workflow)))))
-
 (provide 'org-roam-todo-wf-validate-test)
 ;;; org-roam-todo-wf-validate-test.el ends here

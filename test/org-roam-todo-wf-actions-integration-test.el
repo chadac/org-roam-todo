@@ -386,8 +386,10 @@
   :tags '(:integration :wf :actions :validation)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test-with-git-repo
-    ;; Create uncommitted change
-    (org-roam-todo-wf-test--create-file repo-dir "dirty.txt" "uncommitted")
+    ;; Modify a tracked file (README.md is created by wf-test-with-git-repo)
+    ;; Note: -uno ignores untracked files, so we must modify a tracked file
+    (with-temp-file (expand-file-name "README.md" repo-dir)
+      (insert "Modified content\n"))
     ;; Create a TODO file OUTSIDE the repo
     (let* ((todo-dir (make-temp-file "wf-test-todo-" t))
            (todo-file (org-roam-todo-wf-test--create-todo-file

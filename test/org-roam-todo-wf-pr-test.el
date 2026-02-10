@@ -217,26 +217,95 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
 ;;; Helper Function Tests
 ;;; ============================================================
 
-(ert-deftest wf-pr-test-get-target-branch-name-strips-remote ()
-  "Test get-target-branch-name strips remote prefix."
+(ert-deftest wf-pr-test-strip-remote-prefix ()
+  "Test strip-remote-prefix strips origin/ prefix."
+  :tags '(:unit :wf :pr)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (should (string= "main" (org-roam-todo-wf-pr--strip-remote-prefix "origin/main")))
+  (should (string= "main" (org-roam-todo-wf-pr--strip-remote-prefix "main")))
+  (should (string= "feature/foo" (org-roam-todo-wf-pr--strip-remote-prefix "origin/feature/foo")))
+  (should-not (org-roam-todo-wf-pr--strip-remote-prefix nil)))
+
+(ert-deftest wf-pr-test-get-target-branch-returns-raw-value ()
+  "Test get-target-branch returns the raw configured value."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
          (todo (list :worktree-path "/tmp/test")))
-    (should (string= "main"
-                     (org-roam-todo-wf-pr--get-target-branch-name todo wf)))))
+    ;; Should return "origin/main" as-is, not stripped
+    (should (string= "origin/main"
+                     (org-roam-todo-wf--get-target-branch todo wf)))))
 
-(ert-deftest wf-pr-test-get-target-branch-name-defaults-to-main ()
-  "Test get-target-branch-name defaults to main when no target set."
+(ert-deftest wf-pr-test-get-target-branch-nil-when-not-configured ()
+  "Test get-target-branch returns nil when no target set."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let* ((wf (make-org-roam-todo-workflow :config nil))
          (todo (list :worktree-path "/tmp/test")))
-    (should (string= "main"
-                     (org-roam-todo-wf-pr--get-target-branch-name todo wf)))))
+    (should-not (org-roam-todo-wf--get-target-branch todo wf))))
 
+(ert-deftest wf-pr-test-get-target-branch-uses-project-config ()
+  "Test get-target-branch uses project config when set."
+  :tags '(:unit :wf :pr :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (todo (list :worktree-path "/tmp/test"
+                     :project-name "my-project"))
+         ;; Set project config to override workflow config
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "origin/develop")))))
+    (should (string= "origin/develop"
+                     (org-roam-todo-wf--get-target-branch todo wf)))))
+
+(ert-deftest wf-pr-test-get-target-branch-todo-overrides-project-config ()
+  "Test get-target-branch: TODO :target-branch overrides project config."
+  :tags '(:unit :wf :pr :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (todo (list :worktree-path "/tmp/test"
+                     :project-name "my-project"
+                     :target-branch "origin/feature"))
+         ;; Set project config - should be overridden by TODO property
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "origin/develop")))))
+    (should (string= "origin/feature"
+                     (org-roam-todo-wf--get-target-branch todo wf)))))
+
+(ert-deftest wf-pr-test-get-target-branch-project-config-overrides-workflow ()
+  "Test get-target-branch: project config overrides workflow config."
+  :tags '(:unit :wf :pr :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (todo (list :worktree-path "/tmp/test"
+                     :project-name "my-project"))
+         ;; Project config should override workflow config
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "main")))))
+    ;; Project config is "main", workflow is "origin/main"
+    ;; Project config should win
+    (should (string= "main"
+                     (org-roam-todo-wf--get-target-branch todo wf)))))
+
+(ert-deftest wf-pr-test-get-target-branch-falls-back-to-workflow ()
+  "Test get-target-branch: falls back to workflow when no project config."
+  :tags '(:unit :wf :pr :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/release")))
+         (todo (list :worktree-path "/tmp/test"
+                     :project-name "other-project"))
+         ;; Project config does not include "other-project"
+         (org-roam-todo-project-config
+          '(("my-project" . (:rebase-target "origin/develop")))))
+    ;; Should fall back to workflow config
+    (should (string= "origin/release"
+                     (org-roam-todo-wf--get-target-branch todo wf)))))
 ;;; ============================================================
 ;;; Forge Type Detection Tests
 ;;; ============================================================
@@ -289,7 +358,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
@@ -297,6 +366,8 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
                    :output "Add new feature")
                   (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))
@@ -335,7 +406,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
@@ -343,6 +414,8 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
                    :output "Add new feature")
                   (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))
@@ -378,7 +451,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
@@ -386,6 +459,8 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
                    :output "Add new feature")
                   (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))

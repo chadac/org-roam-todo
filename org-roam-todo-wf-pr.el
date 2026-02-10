@@ -183,24 +183,17 @@ Returns the forge-pullreq object or nil if no PR exists."
   (let ((default-directory worktree-path))
     (forge-get-pullreq :branch)))
 
-(defun org-roam-todo-wf-pr--get-target-branch-name (todo workflow)
-  "Get the target branch name (without remote prefix) from TODO and WORKFLOW.
-DEPRECATED: Use `org-roam-todo-wf-pr--get-target-branch-name-from-event' instead."
-  (let ((target (or (plist-get todo :target-branch)
-                    (plist-get (org-roam-todo-workflow-config workflow) :rebase-target))))
-    ;; Strip remote prefix (e.g., "origin/main" -> "main")
-    (if (and target (string-match "^[^/]+/\\(.+\\)$" target))
-        (match-string 1 target)
-      (or target "main"))))
+;; Target branch functions are in org-roam-todo-wf-actions.el:
+;; - org-roam-todo-wf--get-target-branch (from plist)
+;; - org-roam-todo-wf--get-target-branch-from-event (reads fresh from file)
 
-(defun org-roam-todo-wf-pr--get-target-branch-name-from-event (event workflow)
-  "Get the target branch name (without remote prefix) from EVENT.
-Reads TARGET_BRANCH fresh from file."
-  (let ((target (org-roam-todo-wf--get-target-branch-from-event event workflow)))
-    ;; Strip remote prefix (e.g., "origin/main" -> "main")
-    (if (and target (string-match "^[^/]+/\\(.+\\)$" target))
-        (match-string 1 target)
-      (or target "main"))))
+(defun org-roam-todo-wf-pr--strip-remote-prefix (branch)
+  "Strip remote prefix from BRANCH name for PR API calls.
+E.g., \"origin/main\" -> \"main\", \"main\" -> \"main\".
+GitHub/GitLab APIs expect branch names without remote prefixes."
+  (if (and branch (string-match "^[^/]+/\\(.+\\)$" branch))
+      (match-string 1 branch)
+    branch))
 
 ;;; ------------------------------------------------------------
 ;;; PR Workflow Hooks
@@ -219,7 +212,9 @@ Reads properties fresh from file."
          (description (org-roam-todo-prop event "DESCRIPTION"))
          (body (format "## TODO\n\n%s\n\n---\n_Managed by org-roam-todo_"
                        (or description title)))
-         (target (org-roam-todo-wf-pr--get-target-branch-name-from-event event workflow))
+         ;; Get target branch and strip remote prefix for PR API
+         (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
+         (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
          (default-directory worktree-path)
          (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
          (repo-type (org-roam-todo-wf-pr--repo-type repo)))

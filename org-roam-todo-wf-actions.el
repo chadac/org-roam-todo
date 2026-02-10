@@ -143,10 +143,19 @@ Reads all TODO properties fresh from file via `org-roam-todo-prop'."
 ;;; Helper Functions
 ;;; ============================================================
 
+(defun org-roam-todo-wf--get-target-branch (todo workflow)
+  "Get the effective target branch from TODO plist and WORKFLOW.
+Priority: TODO :target-branch > project config :rebase-target > workflow :rebase-target."
+  (let ((project-name (plist-get todo :project-name)))
+    (or (plist-get todo :target-branch)
+        (when project-name
+          (org-roam-todo-project-config-get project-name :rebase-target))
+        (plist-get (org-roam-todo-workflow-config workflow) :rebase-target))))
 
 (defun org-roam-todo-wf--get-target-branch-from-event (event workflow)
   "Get the effective target branch from EVENT, reading fresh from file.
-Priority: TODO TARGET_BRANCH > project config :rebase-target > workflow :rebase-target."
+Priority: TODO TARGET_BRANCH > project config :rebase-target > workflow :rebase-target.
+Reads properties fresh from file via `org-roam-todo-prop'."
   (let ((project-name (org-roam-todo-prop event "PROJECT_NAME")))
     (or (org-roam-todo-prop event "TARGET_BRANCH")
         (when project-name

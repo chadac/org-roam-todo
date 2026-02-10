@@ -542,7 +542,7 @@ Test task description.
                      0))
                   ;; Mock branch-has-commits to return nil (no upstream)
                   ((symbol-function 'org-roam-todo-wf-tools--branch-has-commits-p)
-                   (lambda () nil)))
+                   (lambda (_todo) nil)))
           (org-roam-todo-wf-tools-stage "Test changes" file)
           ;; Should have called git commit with --no-gpg-sign
           (should (cl-some (lambda (cmd) (member "--no-gpg-sign" cmd)) git-commands))))
@@ -621,7 +621,7 @@ Test task description.
                     ((symbol-function 'org-roam-todo-wf-tools--require-staged-changes)
                      (lambda () nil))
                     ((symbol-function 'org-roam-todo-wf-tools--branch-has-commits-p)
-                     (lambda () t))  ; Has commits!
+                     (lambda (_todo) t))  ; Has commits!
                     ((symbol-function 'call-process)
                      (lambda (program &rest args)
                        (when (and (string= program "git")
@@ -666,7 +666,7 @@ Test task description.
                     ((symbol-function 'org-roam-todo-wf-tools--require-staged-changes)
                      (lambda () nil))
                     ((symbol-function 'org-roam-todo-wf-tools--branch-has-commits-p)
-                     (lambda () t))  ; Has commits, but shouldn't matter
+                     (lambda (_todo) t))  ; Has commits, but shouldn't matter
                     ((symbol-function 'call-process)
                      (lambda (program &rest args)
                        (when (string= program "git")
@@ -748,6 +748,133 @@ Test task description.
           (should-error
            (org-roam-todo-wf-tools-stage "Test" file)
            :type 'user-error)))
+    (org-roam-todo-wf-tools-test--cleanup)))
+
+;;; ============================================================
+;;; Project Config Priority Tests
+;;; ============================================================
+
+(ert-deftest wf-tools-test-branch-has-commits-uses-project-config ()
+  "Test that branch-has-commits-p uses project config for rebase target."
+  :tags '(:unit :wf :tools :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-tools nil t)
+  (unwind-protect
+      (let* ((temp-dir (make-temp-file "project-config-test-" t))
+             (mock-workflow (make-org-roam-todo-workflow
+                             :name 'test-wf
+                             :statuses '("draft" "active" "done")
+                             :config '(:rebase-target "origin/main")))
+             (todo (list :project-name "my-project"
+                         :worktree-path temp-dir))
+             ;; Set project config to override workflow config
+             (org-roam-todo-project-config
+              '(("my-project" . (:rebase-target "develop"))))
+             (target-used nil))
+        (push temp-dir org-roam-todo-wf-tools-test--temp-dirs)
+        ;; Initialize git repo with develop branch
+        (let ((default-directory temp-dir))
+          (call-process "git" nil nil nil "init")
+          (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+          (call-process "git" nil nil nil "config" "user.name" "Test")
+          (with-temp-file (expand-file-name "README.md" temp-dir)
+            (insert "# Test\n"))
+          (call-process "git" nil nil nil "add" "-A")
+          (call-process "git" nil nil nil "commit" "-m" "Initial commit")
+          (call-process "git" nil nil nil "branch" "develop"))
+        ;; Mock workflow lookup and track which target is used
+        (cl-letf (((symbol-function 'org-roam-todo-wf--get-workflow)
+                   (lambda (_) mock-workflow))
+                  ((symbol-function 'org-roam-todo-wf-tools--ref-exists-p)
+                   (lambda (ref)
+                     (setq target-used ref)
+                     t)))
+          (let ((default-directory temp-dir))
+            (org-roam-todo-wf-tools--branch-has-commits-p todo)
+            ;; Should have used "develop" from project config, not "origin/main" from workflow
+            (should (string= "develop" target-used)))))
+    (org-roam-todo-wf-tools-test--cleanup)))
+
+(ert-deftest wf-tools-test-branch-has-commits-todo-overrides-project-config ()
+  "Test that TODO :target-branch overrides project config."
+  :tags '(:unit :wf :tools :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-tools nil t)
+  (unwind-protect
+      (let* ((temp-dir (make-temp-file "todo-override-test-" t))
+             (mock-workflow (make-org-roam-todo-workflow
+                             :name 'test-wf
+                             :statuses '("draft" "active" "done")
+                             :config '(:rebase-target "origin/main")))
+             (todo (list :project-name "my-project"
+                         :worktree-path temp-dir
+                         :target-branch "feature-base"))
+             ;; Set project config - should be overridden
+             (org-roam-todo-project-config
+              '(("my-project" . (:rebase-target "develop"))))
+             (target-used nil))
+        (push temp-dir org-roam-todo-wf-tools-test--temp-dirs)
+        ;; Initialize git repo
+        (let ((default-directory temp-dir))
+          (call-process "git" nil nil nil "init")
+          (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+          (call-process "git" nil nil nil "config" "user.name" "Test")
+          (with-temp-file (expand-file-name "README.md" temp-dir)
+            (insert "# Test\n"))
+          (call-process "git" nil nil nil "add" "-A")
+          (call-process "git" nil nil nil "commit" "-m" "Initial commit")
+          (call-process "git" nil nil nil "branch" "feature-base"))
+        ;; Mock workflow lookup and track which target is used
+        (cl-letf (((symbol-function 'org-roam-todo-wf--get-workflow)
+                   (lambda (_) mock-workflow))
+                  ((symbol-function 'org-roam-todo-wf-tools--ref-exists-p)
+                   (lambda (ref)
+                     (setq target-used ref)
+                     t)))
+          (let ((default-directory temp-dir))
+            (org-roam-todo-wf-tools--branch-has-commits-p todo)
+            ;; Should have used "feature-base" from TODO, not "develop" from project config
+            (should (string= "feature-base" target-used)))))
+    (org-roam-todo-wf-tools-test--cleanup)))
+
+(ert-deftest wf-tools-test-branch-has-commits-falls-back-to-workflow ()
+  "Test that branch-has-commits-p falls back to workflow config when no project config."
+  :tags '(:unit :wf :tools :project-config)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-tools nil t)
+  (unwind-protect
+      (let* ((temp-dir (make-temp-file "fallback-test-" t))
+             (mock-workflow (make-org-roam-todo-workflow
+                             :name 'test-wf
+                             :statuses '("draft" "active" "done")
+                             :config '(:rebase-target "origin/release")))
+             (todo (list :project-name "other-project"
+                         :worktree-path temp-dir))
+             ;; Project config doesn't include "other-project"
+             (org-roam-todo-project-config
+              '(("my-project" . (:rebase-target "develop"))))
+             (target-used nil))
+        (push temp-dir org-roam-todo-wf-tools-test--temp-dirs)
+        ;; Initialize git repo
+        (let ((default-directory temp-dir))
+          (call-process "git" nil nil nil "init")
+          (call-process "git" nil nil nil "config" "user.email" "test@test.com")
+          (call-process "git" nil nil nil "config" "user.name" "Test")
+          (with-temp-file (expand-file-name "README.md" temp-dir)
+            (insert "# Test\n"))
+          (call-process "git" nil nil nil "add" "-A")
+          (call-process "git" nil nil nil "commit" "-m" "Initial commit"))
+        ;; Mock workflow lookup and track which target is used
+        (cl-letf (((symbol-function 'org-roam-todo-wf--get-workflow)
+                   (lambda (_) mock-workflow))
+                  ((symbol-function 'org-roam-todo-wf-tools--ref-exists-p)
+                   (lambda (ref)
+                     (setq target-used ref)
+                     t)))
+          (let ((default-directory temp-dir))
+            (org-roam-todo-wf-tools--branch-has-commits-p todo)
+            ;; Should have used "origin/release" from workflow config
+            (should (string= "origin/release" target-used)))))
     (org-roam-todo-wf-tools-test--cleanup)))
 
 (provide 'org-roam-todo-wf-tools-test)
