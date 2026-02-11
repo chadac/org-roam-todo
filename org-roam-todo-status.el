@@ -34,6 +34,8 @@
 (declare-function org-roam-todo-list--get-agent-status "org-roam-todo-list")
 (declare-function org-roam-todo-list-mode "org-roam-todo-list")
 (declare-function org-roam-todo-list-refresh "org-roam-todo-list")
+(declare-function org-roam-todo-list--find-agent-buffer "org-roam-todo-list")
+(declare-function org-roam-todo-list--build-initial-message "org-roam-todo-list")
 (defvar org-roam-todo-list--project-filter)
 ;; Forward declarations for claude-agent
 (declare-function claude-agent-run "claude-agent-repl")
@@ -513,6 +515,7 @@ the worktree via the workflow hooks)."
 
 (defun org-roam-todo-status-delegate ()
   "Delegate TODO to a Claude agent.
+If an agent is already running for this TODO's worktree, switches to it.
 If the TODO is in draft status, advances to active first (which creates
 the worktree via the workflow hooks)."
   (interactive)
@@ -520,7 +523,8 @@ the worktree via the workflow hooks)."
     (user-error "No TODO in buffer"))
   (let* ((todo org-roam-todo-status--todo)
          (status (plist-get todo :status))
-         (file (plist-get todo :file)))
+         (file (plist-get todo :file))
+         (title (plist-get todo :title)))
     ;; If in draft status, start the TODO first
     (when (string= status "draft")
       (require 'org-roam-todo-wf-tools)
@@ -528,11 +532,47 @@ the worktree via the workflow hooks)."
       ;; Re-read TODO to get updated state
       (org-roam-todo-status-refresh)
       (setq todo org-roam-todo-status--todo))
-    ;; Now delegate using the tools module
-    (require 'org-roam-todo-wf-tools)
-    (let ((result (org-roam-todo-wf-tools-delegate file)))
-      (org-roam-todo-status-refresh)
-      (message "%s" result))))
+    ;; Read properties fresh from file
+    (let* ((worktree-path (org-roam-todo-get-file-property file "WORKTREE_PATH"))
+           (model (org-roam-todo-get-file-property file "WORKTREE_MODEL"))
+           (saved-session (org-roam-todo-get-file-property file "CLAUDE_SESSION_ID"))
+           (allowed-tools (org-roam-todo-effective-agent-allowed-tools)))
+      (unless (and worktree-path (file-directory-p worktree-path))
+        (user-error "No worktree found for this TODO"))
+      ;; Check if agent is already running for this worktree
+      (if-let ((existing-buf (org-roam-todo-list--find-agent-buffer worktree-path)))
+          (progn
+            (message "Switching to existing agent session...")
+            (pop-to-buffer existing-buf))
+        ;; No existing agent, start or resume
+        (require 'claude-agent-repl nil t)
+        (unless (fboundp 'claude-agent-run)
+          (user-error "claude-agent-repl not available"))
+        (let* ((buffer (if saved-session
+                           (progn
+                             (message "Resuming Claude session %s..." (substring saved-session 0 8))
+                             (claude-agent-run worktree-path saved-session nil nil model allowed-tools))
+                         (message "Starting new Claude session for %s..." title)
+                         (claude-agent-run worktree-path nil nil nil model allowed-tools))))
+          ;; If new session, save the session ID and send initial message
+          (unless saved-session
+            (when buffer
+              (let ((initial-msg (org-roam-todo-list--build-initial-message file title)))
+                (run-with-timer
+                 2 nil
+                 (lambda (buf todo-file msg)
+                   (when (buffer-live-p buf)
+                     (with-current-buffer buf
+                       (when-let ((session-id (plist-get claude-agent--session-info :session-id)))
+                         (org-roam-todo-set-file-property todo-file "CLAUDE_SESSION_ID" session-id)
+                         (message "Saved session ID %s to TODO" (substring session-id 0 8)))
+                       (when (and claude-agent--process
+                                  (process-live-p claude-agent--process))
+                         (claude-agent--dispatch-user-message msg)))))
+                 buffer file initial-msg))))
+          (when buffer
+            (pop-to-buffer buffer))))))
+  (org-roam-todo-status-refresh))
 
 (defun org-roam-todo-status-open-list ()
   "Open the TODO list buffer, replacing current window."
