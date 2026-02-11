@@ -26,6 +26,9 @@
 (declare-function org-roam-todo-wf--get-workflow "org-roam-todo-wf")
 (declare-function org-roam-todo-workflow-statuses "org-roam-todo-wf")
 
+;; Forward declarations for status module
+(declare-function org-roam-todo-status "org-roam-todo-status")
+
 ;; Forward declarations for claude-agent integration
 (declare-function claude-agent-run "claude-agent-repl")
 (defvar claude-agent--session-info)
@@ -506,6 +509,14 @@ TODOs are displayed as a flat list, sorted by status (workflow order)."
                          (oref section todo))))
     (org-roam-todo--open-todo-file (plist-get todo :file))))
 
+(defun org-roam-todo-list-open-status ()
+  "Open the TODO status buffer for the TODO at point."
+  (interactive)
+  (when-let* ((section (magit-current-section))
+              (todo (and (org-roam-todo-list-todo-section-p section)
+                         (oref section todo))))
+    (require 'org-roam-todo-status)
+    (org-roam-todo-status todo)))
 (defun org-roam-todo-list-change-status ()
   "Change status of TODO at point.
 Only allows advancing to the next status or regressing to the previous
@@ -734,7 +745,8 @@ Searches existing TODOs for the project root path."
 
 (defvar-keymap org-roam-todo-list-todo-map
   :doc "Keymap for TODO sections."
-  "RET" #'org-roam-todo-list-open-todo
+  "RET" #'org-roam-todo-list-open-status
+  "o" #'org-roam-todo-list-open-todo
   "a" #'org-roam-todo-list-advance
   "c" #'org-roam-todo-list-change-status
   "r" #'org-roam-todo-list-reject
@@ -860,7 +872,9 @@ Bindings:
   (define-key global-map (kbd "C-c n t") org-roam-todo-global-map)
   ;; Bind C-c n p to project map
   (define-key global-map (kbd "C-c n p") org-roam-todo-project-map)
-  (message "TODO keybindings set up: C-c n t (global), C-c n p (project)"))
+  ;; Bind C-x j to TODO status buffer (like C-x g for magit)
+  (global-set-key (kbd "C-x j") #'org-roam-todo-status-from-context)
+  (message "TODO keybindings set up: C-c n t (global), C-c n p (project), C-x j (status)"))
 
 ;; Auto-setup keybindings when loaded
 (org-roam-todo-setup-keybindings)
