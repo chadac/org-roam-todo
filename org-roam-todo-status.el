@@ -34,12 +34,7 @@
 (declare-function org-roam-todo-list--get-agent-status "org-roam-todo-list")
 (declare-function org-roam-todo-list-mode "org-roam-todo-list")
 (declare-function org-roam-todo-list-refresh "org-roam-todo-list")
-(declare-function org-roam-todo-list--find-agent-buffer "org-roam-todo-list")
-(declare-function org-roam-todo-list--build-initial-message "org-roam-todo-list")
 (defvar org-roam-todo-list--project-filter)
-;; Forward declarations for claude-agent
-(declare-function claude-agent-run "claude-agent-repl")
-
 ;; Forward declarations for wf-tools module
 (declare-function org-roam-todo-wf-tools-start "org-roam-todo-wf-tools")
 (declare-function org-roam-todo-wf-tools-delegate "org-roam-todo-wf-tools")
@@ -437,50 +432,27 @@ Full message is stored in help-echo property."
   "Advance TODO to the next status."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
-    (let* ((workflow (org-roam-todo-wf--get-workflow todo))
-           (statuses (org-roam-todo-workflow-statuses workflow))
-           (status (plist-get todo :status))
-           (current-idx (cl-position status statuses :test #'equal))
-           (next-status (when (and current-idx (< current-idx (1- (length statuses))))
-                          (nth (1+ current-idx) statuses))))
-      (if next-status
-          (progn
-            (org-roam-todo-wf--change-status todo next-status)
-            (org-roam-todo-status-refresh)
-            (message "Advanced: %s → %s" status next-status))
-        (user-error "Cannot advance - already at terminal status")))))
+    (let ((result (org-roam-todo-do-advance todo)))
+      (org-roam-todo-status-refresh)
+      (message "Advanced: %s → %s" (cdr result) (car result)))))
 
 (defun org-roam-todo-status-regress ()
   "Regress TODO to the previous status."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
-    (let* ((workflow (org-roam-todo-wf--get-workflow todo))
-           (next-statuses (org-roam-todo-wf--next-statuses workflow (plist-get todo :status)))
-           ;; Filter to only backward transitions (not rejected)
-           (statuses (org-roam-todo-workflow-statuses workflow))
-           (status (plist-get todo :status))
-           (current-idx (cl-position status statuses :test #'equal))
-           (prev-status (when (and current-idx (> current-idx 0))
-                          (nth (1- current-idx) statuses))))
-      (if (and prev-status (member prev-status next-statuses))
-          (progn
-            (org-roam-todo-wf--change-status todo prev-status)
-            (org-roam-todo-status-refresh)
-            (message "Regressed: %s → %s" status prev-status))
-        (user-error "Cannot regress from '%s'" status)))))
+    (let ((result (org-roam-todo-do-regress todo)))
+      (org-roam-todo-status-refresh)
+      (message "Regressed: %s → %s" (cdr result) (car result)))))
 
 (defun org-roam-todo-status-reject ()
   "Reject/abandon the TODO."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
-    (let ((status (plist-get todo :status)))
-      (if (string= status "rejected")
-          (user-error "TODO is already rejected")
-        (when (yes-or-no-p (format "Reject '%s'? " (plist-get todo :title)))
-          (let ((reason (read-string "Reason: ")))
-            (org-roam-todo-wf--change-status todo "rejected")
-            (org-roam-todo-status-refresh)
-            (message "Rejected: %s (%s)" (plist-get todo :title) reason)))))))
+    (when (yes-or-no-p (format "Reject '%s'? " (plist-get todo :title)))
+      (let ((reason (read-string "Reason: ")))
+        (org-roam-todo-do-reject todo reason)
+        (org-roam-todo-status-refresh)
+        (message "Rejected: %s (%s)" (plist-get todo :title) reason)))))
 
 (defun org-roam-todo-status-open-todo ()
   "Open the TODO file."
@@ -490,88 +462,19 @@ Full message is stored in help-echo property."
     (find-file file)))
 
 (defun org-roam-todo-status-open-worktree ()
-  "Open magit-status in the worktree, creating it if necessary.
-If the TODO is in draft status, advances to active first (which creates
-the worktree via the workflow hooks)."
+  "Open magit-status in the worktree, creating it if necessary."
   (interactive)
   (unless org-roam-todo-status--todo
     (user-error "No TODO in buffer"))
-  (let* ((todo org-roam-todo-status--todo)
-         (status (plist-get todo :status))
-         (worktree-path (plist-get todo :worktree-path)))
-    ;; If in draft status, start the TODO first (creates worktree)
-    (when (string= status "draft")
-      (require 'org-roam-todo-wf-tools)
-      (org-roam-todo-wf-tools-start (plist-get todo :file))
-      ;; Re-read TODO to get updated worktree-path
-      (org-roam-todo-status-refresh)
-      (setq todo org-roam-todo-status--todo)
-      (setq worktree-path (plist-get todo :worktree-path)))
-    ;; Now open magit-status in the worktree
-    (if (and worktree-path (file-directory-p worktree-path))
-        (let ((default-directory worktree-path))
-          (magit-status))
-      (user-error "No worktree found"))))
+  (org-roam-todo-do-open-worktree org-roam-todo-status--todo t)
+  (org-roam-todo-status-refresh))
 
 (defun org-roam-todo-status-delegate ()
-  "Delegate TODO to a Claude agent.
-If an agent is already running for this TODO's worktree, switches to it.
-If the TODO is in draft status, advances to active first (which creates
-the worktree via the workflow hooks)."
+  "Delegate TODO to a Claude agent."
   (interactive)
   (unless org-roam-todo-status--todo
     (user-error "No TODO in buffer"))
-  (let* ((todo org-roam-todo-status--todo)
-         (status (plist-get todo :status))
-         (file (plist-get todo :file))
-         (title (plist-get todo :title)))
-    ;; If in draft status, start the TODO first
-    (when (string= status "draft")
-      (require 'org-roam-todo-wf-tools)
-      (org-roam-todo-wf-tools-start file)
-      ;; Re-read TODO to get updated state
-      (org-roam-todo-status-refresh)
-      (setq todo org-roam-todo-status--todo))
-    ;; Read properties fresh from file
-    (let* ((worktree-path (org-roam-todo-get-file-property file "WORKTREE_PATH"))
-           (model (org-roam-todo-get-file-property file "WORKTREE_MODEL"))
-           (saved-session (org-roam-todo-get-file-property file "CLAUDE_SESSION_ID"))
-           (allowed-tools (org-roam-todo-effective-agent-allowed-tools)))
-      (unless (and worktree-path (file-directory-p worktree-path))
-        (user-error "No worktree found for this TODO"))
-      ;; Check if agent is already running for this worktree
-      (if-let ((existing-buf (org-roam-todo-list--find-agent-buffer worktree-path)))
-          (progn
-            (message "Switching to existing agent session...")
-            (pop-to-buffer existing-buf))
-        ;; No existing agent, start or resume
-        (require 'claude-agent-repl nil t)
-        (unless (fboundp 'claude-agent-run)
-          (user-error "claude-agent-repl not available"))
-        (let* ((buffer (if saved-session
-                           (progn
-                             (message "Resuming Claude session %s..." (substring saved-session 0 8))
-                             (claude-agent-run worktree-path saved-session nil nil model allowed-tools))
-                         (message "Starting new Claude session for %s..." title)
-                         (claude-agent-run worktree-path nil nil nil model allowed-tools))))
-          ;; If new session, save the session ID and send initial message
-          (unless saved-session
-            (when buffer
-              (let ((initial-msg (org-roam-todo-list--build-initial-message file title)))
-                (run-with-timer
-                 2 nil
-                 (lambda (buf todo-file msg)
-                   (when (buffer-live-p buf)
-                     (with-current-buffer buf
-                       (when-let ((session-id (plist-get claude-agent--session-info :session-id)))
-                         (org-roam-todo-set-file-property todo-file "CLAUDE_SESSION_ID" session-id)
-                         (message "Saved session ID %s to TODO" (substring session-id 0 8)))
-                       (when (and claude-agent--process
-                                  (process-live-p claude-agent--process))
-                         (claude-agent--dispatch-user-message msg)))))
-                 buffer file initial-msg))))
-          (when buffer
-            (pop-to-buffer buffer))))))
+  (org-roam-todo-do-delegate org-roam-todo-status--todo t)
   (org-roam-todo-status-refresh))
 
 (defun org-roam-todo-status-open-list ()
