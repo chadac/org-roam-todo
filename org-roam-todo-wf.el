@@ -249,8 +249,11 @@ Returns the workflow symbol or nil."
           (intern (string-trim (match-string 1))))))))
 
 (defun org-roam-todo-wf--get-project-workflow (project-name)
-  "Get workflow symbol for PROJECT-NAME from `org-roam-todo-project-workflows'."
-  (alist-get project-name org-roam-todo-project-workflows nil nil #'string=))
+  "Get workflow symbol for PROJECT-NAME.
+Checks `org-roam-todo-project-workflows' first, then falls back to
+`:merge-workflow' in `org-roam-todo-project-config'."
+  (or (alist-get project-name org-roam-todo-project-workflows nil nil #'string=)
+      (org-roam-todo-project-config-get project-name :merge-workflow)))
 
 ;;; ============================================================
 ;;; File Operations

@@ -119,5 +119,9 @@ Lifecycle:
       :type buffer-change
       :on-change (:regress "active")))))
 
+;; Alias for backwards compatibility with configs using :merge-workflow local-rebase
+(puthash 'local-rebase (gethash 'local-ff org-roam-todo-wf--registry)
+         org-roam-todo-wf--registry)
+
 (provide 'org-roam-todo-wf-local)
 ;;; org-roam-todo-wf-local.el ends here
