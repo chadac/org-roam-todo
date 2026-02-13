@@ -159,6 +159,88 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
     (format "Rejected TODO: %s\nReason: %s" (plist-get todo :title) reason)))
 
 
+(defun org-roam-todo-wf-tools-create (title project-root &optional description acceptance-criteria model)
+  "Create a new TODO programmatically.
+TITLE is the TODO title (required).
+PROJECT-ROOT is the path to the project (required).
+DESCRIPTION is an optional task description.
+ACCEPTANCE-CRITERIA is an optional list of criteria strings.
+MODEL is the Claude model to use for the worktree agent (default: opus).
+
+Returns the path to the created TODO file."
+  (require 'org-roam-todo-core)
+  (unless title (user-error "title is required"))
+  (unless project-root (user-error "project_root is required"))
+  
+  (let* ((resolved-root (org-roam-todo-resolve-project-root
+                         (expand-file-name project-root)))
+         (project-name (org-roam-todo-project-name resolved-root))
+         (project-dir (expand-file-name (concat "projects/" project-name) org-roam-directory))
+         (id-timestamp (format "%s%04x" (format-time-string "%Y%m%dT%H%M%S") (random 65536)))
+         (date-stamp (format-time-string "%Y-%m-%d"))
+         (slug (org-roam-todo-slugify title))
+         (file-path (expand-file-name (format "todo-%s.org" slug) project-dir))
+         (model-str (or model "opus"))
+         (description-text (or description ""))
+         (criteria-text (if acceptance-criteria
+                            (mapconcat (lambda (c) (format "- [ ] %s" c))
+                                       (if (listp acceptance-criteria)
+                                           acceptance-criteria
+                                         (list acceptance-criteria))
+                                       "\n")
+                          "- [ ]")))
+    
+    ;; Ensure project directory exists
+    (unless (file-directory-p project-dir)
+      (make-directory project-dir t))
+    
+    ;; Check if file already exists
+    (when (file-exists-p file-path)
+      (user-error "A TODO with slug '%s' already exists: %s" slug file-path))
+    
+    ;; Create the TODO file
+    (with-temp-file file-path
+      (insert (format ":PROPERTIES:
+:ID: %s
+:PROJECT_NAME: %s
+:PROJECT_ROOT: %s
+:STATUS: draft
+:WORKTREE_MODEL: %s
+:CREATED: %s
+:END:
+#+title: %s
+#+filetags: :todo:%s:
+
+** Task Description
+
+%s
+
+** Acceptance Criteria
+%s
+
+** Progress Log
+:PROPERTIES:
+:ID:       %s
+:END:
+"
+                      id-timestamp
+                      project-name
+                      resolved-root
+                      model-str
+                      date-stamp
+                      title
+                      project-name
+                      description-text
+                      criteria-text
+                      (org-id-uuid))))
+    
+    ;; Sync with org-roam if available
+    (when (fboundp 'org-roam-db-update-file)
+      (org-roam-db-update-file file-path))
+    
+    (format "Created TODO: %s\nFile: %s\nProject: %s\nStatus: draft"
+            title file-path project-name)))
+
 (defun org-roam-todo-wf-tools-delegate (&optional todo-id)
   "Delegate a TODO to a Claude agent.
 Spawns an agent in the worktree.  The TODO must be in active status
@@ -455,6 +537,24 @@ The agent can call todo-advance when done."
           :function #'org-roam-todo-wf-tools-delegate
           :args ((todo-id string "Optional: TODO file path, title, or ID")))
 
+        (claude-mcp-deftool todo-create
+          "Create a new TODO for a project programmatically.
+Creates a TODO file in the org-roam projects directory with the specified
+title, description, and acceptance criteria. The TODO starts in 'draft' status.
+
+Use this when you need to:
+- Create a TODO for a task you've identified
+- Break down a larger task into sub-TODOs
+- Document work that needs to be done
+
+After creating, use todo-start to begin working on it (creates worktree)."
+          :function #'org-roam-todo-wf-tools-create
+          :safe t
+          :args ((title string :required "Title for the TODO")
+                 (project-root string :required "Path to the project root directory")
+                 (description string "Task description explaining what needs to be done")
+                 (acceptance-criteria array "List of acceptance criteria strings")
+                 (model string "Claude model for worktree agent: opus, sonnet (default: opus)")))
 
         (claude-mcp-deftool todo-watch-status
           "Watch a TODO's status until auto-upgrade completes or times out.
