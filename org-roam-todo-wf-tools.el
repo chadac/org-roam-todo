@@ -104,117 +104,6 @@ Creates the worktree via :on-enter-active hook."
       (org-roam-todo-wf--change-status todo "active" 'ai)
       (format "Started TODO: %s" (plist-get todo :title)))))
 
-(defun org-roam-todo-wf-tools-stage (description &optional todo-id)
-  "Commit staged changes according to workflow's commit-strategy.
-DESCRIPTION is a description of the changes made.
-TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
-
-The agent must explicitly stage changes before calling this tool.
-If there are unstaged changes, this tool will error - the agent should
-either stage them, add them to .gitignore, or use `git update-index
---assume-unchanged` to exclude them.
-
-Commit strategies (from workflow :commit-strategy config):
-- :single-commit (default): Creates one commit, amends if branch has commits
-- :many-commit: Creates a new commit for each stage call
-- :managed-commit: Does nothing - agent must commit manually
-
-All automated commits use --no-gpg-sign."
-  (let ((todo (org-roam-todo-wf-tools--get-todo todo-id)))
-    (unless todo
-      (user-error "TODO not found: %s" (or todo-id "current")))
-    (let* ((worktree-path (plist-get todo :worktree-path))
-           (workflow (org-roam-todo-wf--get-workflow todo))
-           (config (org-roam-todo-workflow-config workflow))
-           (strategy (or (plist-get config :commit-strategy) :single-commit)))
-      (unless worktree-path
-        (user-error "No worktree exists - call todo-start first"))
-      (let ((default-directory worktree-path))
-        ;; Check for unstaged changes
-        (org-roam-todo-wf-tools--require-no-unstaged)
-        ;; Check for staged changes (unless managed-commit)
-        (unless (eq strategy :managed-commit)
-          (org-roam-todo-wf-tools--require-staged-changes))
-        ;; Commit according to strategy
-        (pcase strategy
-          (:single-commit
-           (org-roam-todo-wf-tools--commit-single description todo))
-          (:many-commit
-           (org-roam-todo-wf-tools--commit-new description))
-          (:managed-commit
-           "Commit strategy is :managed-commit - commit manually when ready.")
-          (_
-           (user-error "Unknown commit strategy: %s" strategy)))))))
-
-(defun org-roam-todo-wf-tools--require-no-unstaged ()
-  "Error if there are unstaged changes in the working tree.
-Unstaged changes should be explicitly staged, added to .gitignore,
-or excluded with `git update-index --assume-unchanged`."
-  (let ((output (with-output-to-string
-                  (with-current-buffer standard-output
-                    (call-process "git" nil t nil
-                                  "diff" "--name-only")))))
-    (when (and output (not (string-empty-p (string-trim output))))
-      (user-error "Unstaged changes detected: %s\nStage them, add to .gitignore, or exclude with `git update-index --assume-unchanged`"
-                  (string-trim output)))))
-
-(defun org-roam-todo-wf-tools--require-staged-changes ()
-  "Error if there are no staged changes to commit."
-  (let ((output (with-output-to-string
-                  (with-current-buffer standard-output
-                    (call-process "git" nil t nil
-                                  "diff" "--cached" "--name-only")))))
-    (when (or (null output) (string-empty-p (string-trim output)))
-      (user-error "No staged changes to commit.  Stage your changes first with `git add` or `magit_stage`"))))
-
-(defun org-roam-todo-wf-tools--ref-exists-p (ref)
-  "Return non-nil if git REF exists."
-  (= 0 (call-process "git" nil nil nil "rev-parse" "--verify" "--quiet" ref)))
-
-(defun org-roam-todo-wf-tools--branch-has-commits-p (todo)
-  "Return non-nil if the current branch has commits ahead of the target.
-Uses generic `org-roam-todo-wf--get-target-branch' for target resolution.
-Falls back to 'main' if the configured target doesn't exist."
-  (let* ((workflow (org-roam-todo-wf--get-workflow todo))
-         ;; Use the generic function for target branch resolution
-         (configured-target (or (org-roam-todo-wf--get-target-branch todo workflow)
-                                "main"))
-         ;; Use configured target if it exists, otherwise try 'main'
-         (target (cond
-                  ((org-roam-todo-wf-tools--ref-exists-p configured-target) configured-target)
-                  ((org-roam-todo-wf-tools--ref-exists-p "main") "main")
-                  (t nil))))
-    (when target
-      (let ((output (with-output-to-string
-                      (with-current-buffer standard-output
-                        (call-process "git" nil t nil
-                                      "rev-list" "--count" (format "%s..HEAD" target))))))
-        (and output
-             (string-match "^\\([0-9]+\\)" output)
-             (> (string-to-number (match-string 1 output)) 0))))))
-
-(defun org-roam-todo-wf-tools--commit-single (description todo)
-  "Commit with DESCRIPTION, amending if branch already has commits.
-TODO is used to determine the target branch from workflow config."
-  (if (org-roam-todo-wf-tools--branch-has-commits-p todo)
-      ;; Amend existing commit
-      (let ((result (call-process "git" nil nil nil
-                                  "commit" "--amend" "--no-gpg-sign"
-                                  "-m" description)))
-        (if (= result 0)
-            (format "Amended commit: %s" description)
-          (user-error "Failed to amend commit")))
-    ;; Create new commit
-    (org-roam-todo-wf-tools--commit-new description)))
-
-(defun org-roam-todo-wf-tools--commit-new (description)
-  "Create a new commit with DESCRIPTION."
-  (let ((result (call-process "git" nil nil nil
-                              "commit" "--no-gpg-sign" "-m" description)))
-    (if (= result 0)
-        (format "Created commit: %s" description)
-      (user-error "Failed to create commit"))))
-
 (defun org-roam-todo-wf-tools-advance (&optional todo-id)
   "Advance TODO to next status in workflow (+1).
 TODO-ID can be a file path, title, or ID. Defaults to current TODO."
@@ -290,6 +179,94 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
       (let ((buffer-name (org-roam-todo-wf-tools--spawn-agent worktree-path todo)))
         (format "Delegated to agent: %s\nWorktree: %s" buffer-name worktree-path)))))
 
+(defvar org-roam-todo-wf-tools--review-file nil
+  "File path of TODO being reviewed (buffer-local).")
+
+(defun org-roam-todo-wf-tools--review-approve ()
+  "Approve the TODO being reviewed."
+  (interactive)
+  (when org-roam-todo-wf-tools--review-file
+    (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "APPROVED" "t")
+    ;; Clear needs-review flag
+    (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "NEEDS_REVIEW" nil)
+    (message "Approved! Advancing to review status...")
+    (sit-for 0.5)
+    (org-roam-todo-wf-tools-advance org-roam-todo-wf-tools--review-file)
+    (quit-window t)
+    ;; Refresh todo-status buffer if it exists
+    (when (featurep 'org-roam-todo-status)
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (when (derived-mode-p 'org-roam-todo-status-mode)
+            (org-roam-todo-status-refresh)))))
+    (message "TODO advanced to review status")))
+
+(defun org-roam-todo-wf-tools--review-reject ()
+  "Reject the TODO being reviewed with optional feedback."
+  (interactive)
+  (when org-roam-todo-wf-tools--review-file
+    (let ((feedback (read-string "Rejection reason (optional): ")))
+      (when (and feedback (not (string-empty-p feedback)))
+        (org-roam-todo-wf-tools--set-property 
+         org-roam-todo-wf-tools--review-file 
+         "REVIEW_FEEDBACK" 
+         feedback))
+      ;; Clear needs-review flag
+      (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "NEEDS_REVIEW" nil)
+      (message "Rejected. Regressing to active status...")
+      (sit-for 0.5)
+      (org-roam-todo-wf-tools-regress org-roam-todo-wf-tools--review-file)
+      (quit-window t)
+      ;; Refresh todo-status buffer if it exists
+      (when (featurep 'org-roam-todo-status)
+        (dolist (buf (buffer-list))
+          (with-current-buffer buf
+            (when (derived-mode-p 'org-roam-todo-status-mode)
+              (org-roam-todo-status-refresh)))))
+      (message "TODO regressed to active status"))))
+
+(defun org-roam-todo-wf-tools-review (&optional todo-or-id)
+  "Review TODO changes and approve for external review.
+Opens a log view showing all commits unique to the branch with diffs.
+Press '?' to see review commands.
+TODO-OR-ID can be a TODO plist, file path, title, or ID.  Defaults to current TODO."
+  (interactive)
+  (let* ((todo (if (and (listp todo-or-id) (plist-get todo-or-id :file))
+                   todo-or-id  ; Already a TODO plist
+                 (org-roam-todo-wf-tools--get-todo todo-or-id)))
+         (file (plist-get todo :file)))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-or-id "current")))
+    (let ((needs-review (plist-get todo :needs-review))
+          (worktree-path (plist-get todo :worktree-path))
+          (worktree-branch (plist-get todo :worktree-branch)))
+      ;; Validate that this TODO needs review
+      (unless (equal needs-review "t")
+        (user-error "This TODO is not marked for review (NEEDS_REVIEW property not set)"))
+      ;; Validate worktree
+      (unless worktree-path
+        (user-error "No worktree exists - call todo-start first"))
+      (unless worktree-branch
+        (user-error "No worktree branch configured"))
+      ;; Get the target branch to diff against
+      (require 'org-roam-todo-wf-actions)
+      (let* ((workflow (org-roam-todo-wf--get-workflow todo))
+             (target-branch (org-roam-todo-wf--get-target-branch todo workflow))
+             (default-directory worktree-path))
+        (unless target-branch
+          (user-error "No rebase target configured for this workflow"))
+        ;; Show log with diffs for commits unique to this branch
+        ;; Using target..HEAD shows only commits on current branch not in target
+        (require 'magit-log)
+        (let ((buf (magit-log-other (list (format "%s..HEAD" target-branch)) '("--patch"))))
+          ;; Set buffer-local review file
+          (with-current-buffer buf
+            (setq-local org-roam-todo-wf-tools--review-file file)
+            ;; Add keybindings to the magit log buffer
+            (local-set-key (kbd "a") #'org-roam-todo-wf-tools--review-approve)
+            (local-set-key (kbd "r") #'org-roam-todo-wf-tools--review-reject))
+          (message "Review commands: [a] approve & advance, [r] reject & regress, [q] quit"))))))
+
 ;;; ============================================================
 ;;; Agent Spawning
 ;;; ============================================================
@@ -351,6 +328,165 @@ The workflow will handle pushing and PR creation automatically."
       (save-buffer))))
 
 ;;; ============================================================
+;;; Async Status Watching
+;;; ============================================================
+
+(defvar org-roam-todo-wf-tools--watch-tasks (make-hash-table :test 'equal)
+  "Hash table tracking active watch tasks.
+Key: task-id, Value: plist with :todo-id :start-time :iteration :timer")
+
+(defun org-roam-todo-wf-tools--watch-poll (task-id)
+  "Poll TODO status for TASK-ID and apply auto-upgrade if ready.
+This function is called periodically by a timer."
+  (let* ((state (gethash task-id org-roam-todo-wf-tools--watch-tasks))
+         (todo-id (plist-get state :todo-id))
+         (start-time (plist-get state :start-time))
+         (timeout-secs (plist-get state :timeout))
+         (iteration (1+ (or (plist-get state :iteration) 0)))
+         (elapsed (- (float-time) start-time)))
+
+    ;; Update iteration count
+    (plist-put state :iteration iteration)
+
+    ;; Check timeout
+    (when (> elapsed timeout-secs)
+      (when (plist-get state :timer)
+        (cancel-timer (plist-get state :timer)))
+      (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+      (claude-mcp-async-complete task-id
+                                 (format "Watch timeout after %d seconds. TODO did not auto-upgrade."
+                                         timeout-secs))
+      (cl-return-from org-roam-todo-wf-tools--watch-poll))
+
+    ;; Try to resolve the TODO
+    (condition-case err
+        (let ((todo (org-roam-todo-wf-tools--get-todo todo-id)))
+          (unless todo
+            (when (plist-get state :timer)
+              (cancel-timer (plist-get state :timer)))
+            (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+            (claude-mcp-async-error task-id
+                                    (format "TODO not found: %s" todo-id))
+            (cl-return-from org-roam-todo-wf-tools--watch-poll))
+
+          (let* ((todo-file (plist-get todo :file))
+                 (current-status (plist-get todo :status))
+                 (initial-status (plist-get state :initial-status)))
+
+            ;; Check if status changed (someone manually changed it, or auto-upgrade happened)
+            (when (not (string= current-status initial-status))
+              (when (plist-get state :timer)
+                (cancel-timer (plist-get state :timer)))
+              (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+              (claude-mcp-async-complete 
+               task-id
+               (format "TODO status changed: %s -> %s\nElapsed: %.0fs"
+                       initial-status current-status elapsed))
+              (cl-return-from org-roam-todo-wf-tools--watch-poll))
+
+            ;; Check if auto-upgrade is ready
+            (let* ((check-result (org-roam-todo-wf-check-auto-upgrade todo-file current-status))
+                   (result-state (plist-get check-result :state)))
+              (if (plist-get check-result :can-upgrade)
+                  ;; Apply the upgrade
+                  (let ((apply-result (org-roam-todo-wf-apply-auto-upgrade todo-file)))
+                    (when (plist-get state :timer)
+                      (cancel-timer (plist-get state :timer)))
+                    (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+                    (if (plist-get apply-result :applied)
+                        (claude-mcp-async-complete 
+                         task-id
+                         (format "Auto-upgrade applied: %s -> %s\n\nAction: %s\nState: %s\nElapsed: %.0fs\n\n%s"
+                                 current-status
+                                 (plist-get check-result :target-status)
+                                 (plist-get check-result :action)
+                                 (plist-get check-result :state)
+                                 elapsed
+                                 (or (plist-get check-result :message) "")))
+                      (claude-mcp-async-error 
+                       task-id
+                       (format "Auto-upgrade check succeeded but apply failed: %s"
+                               (or (plist-get apply-result :message) "unknown error")))))
+                ;; Check for terminal states that should stop polling
+                (cond
+                 ;; Failed validation with no on-fail configured - terminal state
+                 ((and (eq result-state :fail)
+                       (not (plist-get check-result :can-upgrade)))
+                  (when (plist-get state :timer)
+                    (cancel-timer (plist-get state :timer)))
+                  (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+                  (claude-mcp-async-complete
+                   task-id
+                   (format "Validation failed (no auto-downgrade configured)\n\nState: %s\nElapsed: %.0fs\n\n%s"
+                           result-state
+                           elapsed
+                           (or (plist-get check-result :message) ""))))
+                 ;; Feedback required - terminal state
+                 ((eq result-state :feedback)
+                  (when (plist-get state :timer)
+                    (cancel-timer (plist-get state :timer)))
+                  (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+                  (claude-mcp-async-complete
+                   task-id
+                   (format "User feedback required\n\nState: %s\nElapsed: %.0fs\n\n%s"
+                           result-state
+                           elapsed
+                           (or (plist-get check-result :message) ""))))
+                 ;; Still pending - continue polling
+                 (t
+                  (message "[%d] TODO watch: status=%s state=%s (%.0fs elapsed)"
+                           iteration current-status result-state elapsed)))))))
+      (error
+       (when (plist-get state :timer)
+         (cancel-timer (plist-get state :timer)))
+       (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+       (claude-mcp-async-error task-id
+                               (format "Error checking TODO status: %s"
+                                       (error-message-string err)))))))
+
+(defun org-roam-todo-wf-tools--watch-status (task-id server-port todo-id 
+                                                     &optional poll-interval timeout)
+  "Watch TODO-ID's status until auto-upgrade completes or times out (async).
+TASK-ID and SERVER-PORT are provided by the MCP async framework.
+POLL-INTERVAL defaults to 30 seconds.
+TIMEOUT defaults to 3600 seconds (1 hour).
+
+Returns :async-started immediately and polls in the background."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (timeout-secs (or timeout 3600))
+         (poll-secs (or poll-interval 30)))
+    
+    (unless todo
+      (claude-mcp-async-error task-id (format "TODO not found: %s" todo-id))
+      (cl-return-from org-roam-todo-wf-tools--watch-status :async-started))
+
+    (let* ((current-status (plist-get todo :status))
+           (state (list :todo-id todo-id
+                       :initial-status current-status
+                       :start-time (float-time)
+                       :timeout timeout-secs
+                       :poll-interval poll-secs
+                       :iteration 0
+                       :timer nil)))
+
+      ;; Store state
+      (puthash task-id state org-roam-todo-wf-tools--watch-tasks)
+
+      ;; Set up timer for polling (starts with immediate poll at 0.1s)
+      (let ((timer (run-with-timer 0.1 poll-secs
+                                   (lambda () (org-roam-todo-wf-tools--watch-poll task-id)))))
+        (plist-put state :timer timer)
+
+        ;; Register with MCP framework
+        (claude-mcp-async-register task-id
+                                   :port server-port
+                                   :timer timer
+                                   :timeout timeout-secs))
+
+      ;; Return immediately - result will come via claude-mcp-async-complete
+      :async-started)))
+
+;;; ============================================================
 ;;; MCP Tool Registration
 ;;; ============================================================
 
@@ -366,21 +502,6 @@ Creates a git worktree and sets up the branch for development.
 TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
           :function #'org-roam-todo-wf-tools-start
           :args ((todo-id string "Optional: TODO file path, title, or ID")))
-
-        (claude-mcp-deftool todo-stage-changes
-          "Commit staged changes according to workflow's commit strategy.
-You must explicitly stage changes first (via `git add` or `magit_stage`).
-Errors if there are unstaged changes - stage them, add to .gitignore,
-or exclude with `git update-index --assume-unchanged`.
-Commit strategies:
-- :single-commit (default): Creates one commit, amends if branch has commits
-- :many-commit: Creates a new commit for each stage call
-- :managed-commit: Validates only - agent must commit manually
-All automated commits use --no-gpg-sign."
-          :function #'org-roam-todo-wf-tools-stage
-          :safe t
-          :args ((description string :required "Description of all changes made")
-                 (todo-id string "Optional: TODO file path, title, or ID")))
 
         (claude-mcp-deftool todo-advance
           "Advance TODO to the next status in workflow.
@@ -413,7 +534,23 @@ Spawns an agent in the worktree to work on the TODO autonomously.
 The TODO must be in active status with a worktree created.
 The agent can call todo-advance when done."
           :function #'org-roam-todo-wf-tools-delegate
-          :args ((todo-id string "Optional: TODO file path, title, or ID")))))))
+          :args ((todo-id string "Optional: TODO file path, title, or ID")))
+
+
+        (claude-mcp-deftool todo-watch-status
+          "Watch a TODO's status until auto-upgrade completes or times out.
+Polls validations and applies auto-upgrade when ready.
+Returns when the TODO advances/regresses or timeout is reached.
+
+This is useful for monitoring async validations like CI checks.
+The tool will automatically apply transitions when validation state changes."
+          :async t
+          :timeout 3600
+          :function #'org-roam-todo-wf-tools--watch-status
+          :safe t
+          :args ((todo-id string :required "TODO file path, title, or ID")
+                 (poll-interval integer "Seconds between checks (default: 30)")
+                 (timeout integer "Maximum seconds to wait (default: 3600)")))))))
 
 (provide 'org-roam-todo-wf-tools)
 ;;; org-roam-todo-wf-tools.el ends here

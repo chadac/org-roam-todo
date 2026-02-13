@@ -210,12 +210,15 @@
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--setup-mock-workflow)
 
-  (let ((event (make-org-roam-todo-event
-                :type :validate-review
-                :todo '(:title "Test" :extra (:should-fail t))
-                :workflow org-roam-todo-wf-test--mock-workflow)))
-    (should-error (org-roam-todo-wf--dispatch-event event)
-                  :type 'user-error)))
+  (let* ((event (make-org-roam-todo-event
+                 :type :validate-review
+                 :todo '(:title "Test" :extra (:should-fail t))
+                 :workflow org-roam-todo-wf-test--mock-workflow))
+         (result (org-roam-todo-wf--dispatch-event event)))
+    ;; With structured returns, dispatch collects results instead of raising errors
+    (should (plist-get result :results))
+    (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+                     (plist-get result :results)))))
 
 (ert-deftest wf-test-validation-hook-passes ()
   "Test that validation hooks pass when conditions are met."
@@ -497,20 +500,26 @@
               :hooks '((:validate-b . (org-roam-todo-wf--only-human)))
               :config nil)))
     ;; Human should pass
-    (let ((event (make-org-roam-todo-event
-                  :type :validate-b
-                  :todo '(:title "Test")
-                  :workflow wf
-                  :actor 'human)))
-      (should (org-roam-todo-wf--dispatch-event event)))
+    (let* ((event (make-org-roam-todo-event
+                   :type :validate-b
+                   :todo '(:title "Test")
+                   :workflow wf
+                   :actor 'human))
+           (result (org-roam-todo-wf--dispatch-event event)))
+      (should (plist-get result :results))
+      (should (cl-every (lambda (r) (or (eq r :pass)
+                                        (and (listp r) (eq (car r) :pass))))
+                        (plist-get result :results))))
     ;; AI should fail
-    (let ((event (make-org-roam-todo-event
-                  :type :validate-b
-                  :todo '(:title "Test")
-                  :workflow wf
-                  :actor 'ai)))
-      (should-error (org-roam-todo-wf--dispatch-event event)
-                    :type 'user-error))))
+    (let* ((event (make-org-roam-todo-event
+                   :type :validate-b
+                   :todo '(:title "Test")
+                   :workflow wf
+                  :actor 'ai))
+           (result (org-roam-todo-wf--dispatch-event event)))
+       (should (plist-get result :results))
+       (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+                        (plist-get result :results))))))
 
 (ert-deftest wf-test-permission-hook-combined-with-other-validation ()
   "Test that permission hooks work alongside other validation hooks."
@@ -527,25 +536,29 @@
               :hooks `((:validate-b . (,custom-validator org-roam-todo-wf--only-human)))
               :config nil)))
     ;; Human should pass both hooks
-    (let ((event (make-org-roam-todo-event
-                  :type :validate-b
-                  :todo '(:title "Test")
-                  :workflow wf
-                  :actor 'human)))
+    (let* ((event (make-org-roam-todo-event
+                   :type :validate-b
+                   :todo '(:title "Test")
+                   :workflow wf
+                   :actor 'human)))
       (setq custom-passed nil)
-      (should (org-roam-todo-wf--dispatch-event event))
-      (should custom-passed))
+      (let ((result (org-roam-todo-wf--dispatch-event event)))
+        (should (cl-every (lambda (r) (or (eq r :pass)
+                                          (and (listp r) (eq (car r) :pass))))
+                          (plist-get result :results)))
+        (should custom-passed)))
     ;; AI should fail at permission hook (custom should still run first)
-    (let ((event (make-org-roam-todo-event
-                  :type :validate-b
-                  :todo '(:title "Test")
-                  :workflow wf
-                  :actor 'ai)))
+    (let* ((event (make-org-roam-todo-event
+                   :type :validate-b
+                   :todo '(:title "Test")
+                   :workflow wf
+                   :actor 'ai)))
       (setq custom-passed nil)
-      (should-error (org-roam-todo-wf--dispatch-event event)
-                    :type 'user-error)
-      ;; Custom validator should have been called before permission check
-      (should custom-passed))))
+      (let ((result (org-roam-todo-wf--dispatch-event event)))
+        (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+                         (plist-get result :results)))
+        ;; Custom validator should have been called before permission check
+        (should custom-passed)))))
 
 (ert-deftest wf-test-change-status-passes-actor-to-hooks ()
   "Test that change-status correctly passes actor to validation hooks."

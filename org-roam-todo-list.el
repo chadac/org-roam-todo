@@ -504,7 +504,7 @@ TODOs are displayed as a flat list, sorted by status (workflow order)."
   (when-let* ((section (magit-current-section))
               (todo (and (org-roam-todo-list-todo-section-p section)
                          (oref section todo))))
-    (org-roam-todo--open-todo-file (plist-get todo :file))))
+    (org-roam-todo-do-open-todo todo)))
 
 (defun org-roam-todo-list-open-status ()
   "Open the TODO status buffer for the TODO at point."

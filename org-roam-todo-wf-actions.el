@@ -171,6 +171,22 @@ Reads properties fresh from file via `org-roam-todo-prop'."
 ;;; Validation Hooks
 ;;; ============================================================
 
+(defun org-roam-todo-wf--require-rebase-target-exists (event)
+  "Validate: rebase-target branch/ref exists.
+EVENT is the workflow event context.
+This ensures the target we'll create the branch from actually exists.
+Reads properties fresh from file via `org-roam-todo-prop'."
+  (let* ((workflow (org-roam-todo-event-workflow event))
+         (project-root (org-roam-todo-prop event "PROJECT_ROOT"))
+         (target (org-roam-todo-wf--get-target-branch-from-event event workflow)))
+    (when (and project-root target)
+      ;; Check if the ref exists with git rev-parse
+      (let ((result (org-roam-todo-wf--git-run
+                     project-root "rev-parse" "--verify" target)))
+        (unless (= 0 (car result))
+          (user-error "Rebase target '%s' does not exist.  Fetch or correct the target branch"
+                      target))))))
+
 (defun org-roam-todo-wf--require-clean-worktree (event)
   "Validate: worktree has no uncommitted changes.
 EVENT is the workflow event context.

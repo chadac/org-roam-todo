@@ -179,9 +179,18 @@ Returns the forge repository object or signals an error."
 
 (defun org-roam-todo-wf-pr--get-pullreq (worktree-path)
   "Get the pull request for the current branch in WORKTREE-PATH.
-Returns the forge-pullreq object or nil if no PR exists."
+Returns the forge-pullreq object or nil if no PR exists.
+Falls back to database lookup if git config is not set (for externally-created PRs)."
   (let ((default-directory worktree-path))
-    (forge-get-pullreq :branch)))
+    (or
+     ;; Try fast lookup via git config (set by forge when creating/checking out PRs)
+     (forge-get-pullreq :branch)
+     ;; Fallback: search through all PRs for matching head-ref branch
+     (when-let* ((repo (forge-get-repository :tracked?))
+                 (branch (magit-get-current-branch)))
+       (cl-find-if (lambda (pr)
+                     (equal (oref pr head-ref) branch))
+                   (oref repo pullreqs))))))
 
 ;; Target branch functions are in org-roam-todo-wf-actions.el:
 ;; - org-roam-todo-wf--get-target-branch (from plist)
@@ -303,6 +312,11 @@ Used by watchers to poll merge status and trigger auto-advancement."
 (defun org-roam-todo-wf-pr--require-ci-pass (event)
   "Validate: CI checks have passed for the PR.
 EVENT is the workflow event context.
+Returns:
+  nil (or :pass) - CI checks passed
+  (:pending \"message\") - CI checks still running
+  (:fail \"message\") - CI checks failed or PR not found
+
 Uses `magit-forge-ci' if available to check CI status.
 Otherwise, always passes (user must verify CI manually).
 Reads WORKTREE_PATH fresh from file."
@@ -323,12 +337,12 @@ Reads WORKTREE_PATH fresh from file."
                      (checks (magit-forge-ci--get-checks-via-gh-cli owner name pr-number))
                      (status (magit-forge-ci--compute-overall-status checks)))
                 (pcase status
-                  ("success" nil)  ; validation passes
-                  ("pending" (user-error "CI checks are still running"))
-                  ("failure" (user-error "CI checks have failed"))
-                  (_ (user-error "CI status unknown: %s" status))))
+                  ("success" nil)  ; pass - CI succeeded
+                  ("pending" (list :pending "CI checks are still running"))
+                  ("failure" (list :fail "CI checks have failed"))
+                  (_ (list :fail (format "CI status unknown: %s" status)))))
             ;; No PR yet - can't check CI
-            (user-error "No PR found - cannot check CI status")))
+            (list :fail "No PR found - cannot check CI status")))
       ;; magit-forge-ci not available - always pass
       nil)))
 
@@ -370,6 +384,12 @@ Reads WORKTREE_PATH fresh from file."
         (unless pullreq
           (user-error "No pull request found for current branch"))
         (forge--set-topic-review-requests repo pullreq reviewers)))))
+
+(defun org-roam-todo-wf-pr--set-needs-review (event)
+  "Set NEEDS_REVIEW property to t.
+EVENT is the workflow event context."
+  (let ((file (plist-get (org-roam-todo-event-todo event) :file)))
+    (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" "t")))
 
 (defun org-roam-todo-wf-pr--on-enter-ci (event)
   "Actions when entering CI status.
@@ -416,7 +436,10 @@ Requirements:
   :statuses '("draft" "active" "ci" "ready" "review" "done")
 
   :hooks
-  '(;; When entering active: set up branch and create worktree
+  '(;; Validation before active: ensure rebase target exists
+    (:validate-active . (org-roam-todo-wf--require-rebase-target-exists))
+
+    ;; When entering active: set up branch and create worktree
     (:on-enter-active . (org-roam-todo-wf--ensure-branch
                          org-roam-todo-wf--ensure-worktree))
 
@@ -431,8 +454,9 @@ Requirements:
     (:validate-ready . (org-roam-todo-wf--require-acceptance-complete
                         org-roam-todo-wf-pr--require-ci-pass))
 
-    ;; When entering ready: mark PR ready for review
-    (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready))
+    ;; When entering ready: mark PR ready for review, set needs-review flag
+    (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready
+                        org-roam-todo-wf-pr--set-needs-review))
 
     ;; Validation before review: user must approve their own changes
     ;; Also: only AI agents (CI automation) can advance to review
@@ -455,6 +479,22 @@ Requirements:
     :reviewers nil                   ; set per-project
     :labels nil                      ; set per-project
     :allow-backward (ci ready)       ; can regress for fixes
+
+    ;; Auto-upgrade configuration for async validation monitoring
+    :auto-upgrade
+    (("ci" . (:on-pass "ready"       ; advance when CI passes
+              :on-fail "active"       ; regress when CI fails
+              :poll-interval 60       ; check every 60 seconds
+              :timeout 3600           ; stop after 1 hour
+              :feedback nil))         ; no feedback capture
+     
+     ("ready" . (:on-pass "review"   ; advance when user approves
+                 :on-fail "active"    ; regress if user rejects
+                 :feedback t))        ; capture feedback on rejection
+     
+     ("review" . (:on-pass "done"    ; advance when PR merged
+                  :on-fail "active"   ; regress if PR closed
+                  :feedback t)))      ; capture feedback from PR review
 
     ;; Watchers for async status monitoring
     :watchers

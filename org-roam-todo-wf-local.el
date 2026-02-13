@@ -86,7 +86,10 @@ Lifecycle:
   :statuses '("draft" "active" "review" "done")
 
   :hooks
-  '(;; When entering active: set up branch and create worktree
+  '(;; Validation before active: ensure rebase target exists
+    (:validate-active . (org-roam-todo-wf--require-rebase-target-exists))
+
+    ;; When entering active: set up branch and create worktree
     (:on-enter-active . (org-roam-todo-wf--ensure-branch
                          org-roam-todo-wf--ensure-worktree))
 

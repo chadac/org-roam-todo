@@ -702,7 +702,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
       (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
 
 (ert-deftest wf-pr-test-require-ci-pass-with-failure ()
-  "Test require-ci-pass fails when CI checks fail."
+  "Test require-ci-pass returns :fail when CI checks fail."
   :tags '(:unit :wf :pr :validation :ci)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
@@ -730,13 +730,14 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                  :output '(((state . "failure"))))))
              (magit-forge-ci--compute-overall-status (checks)
                ((:input-matcher (lambda (&rest _) t) :output "failure"))))
-          ;; Should fail when CI has failures
-          (should-error (org-roam-todo-wf-pr--require-ci-pass event)
-                        :type 'user-error))
+          ;; Should return (:fail "message") when CI has failures
+          (let ((result (org-roam-todo-wf-pr--require-ci-pass event)))
+            (should (listp result))
+            (should (eq (car result) :fail))))
       (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
 
 (ert-deftest wf-pr-test-require-ci-pass-with-pending ()
-  "Test require-ci-pass fails when CI checks are pending."
+  "Test require-ci-pass returns :pending when CI checks are pending."
   :tags '(:unit :wf :pr :validation :ci)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
@@ -764,9 +765,10 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                  :output '(((state . "pending"))))))
              (magit-forge-ci--compute-overall-status (checks)
                ((:input-matcher (lambda (&rest _) t) :output "pending"))))
-          ;; Should fail when CI is pending
-          (should-error (org-roam-todo-wf-pr--require-ci-pass event)
-                        :type 'user-error))
+          ;; Should return (:pending "message") when CI is pending
+          (let ((result (org-roam-todo-wf-pr--require-ci-pass event)))
+            (should (listp result))
+            (should (eq (car result) :pending))))
       (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
 
 (ert-deftest wf-pr-test-has-validate-ready-hook ()

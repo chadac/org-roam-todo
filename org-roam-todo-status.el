@@ -61,6 +61,20 @@
   "Face for failing validation checks."
   :group 'org-roam-todo-status)
 
+(defface org-roam-todo-status-validation-pending
+  '((((class color) (background dark)) :foreground "#61afef")
+    (((class color) (background light)) :foreground "#0070cc")
+    (t :inherit warning))
+  "Face for pending/async validation checks."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-validation-feedback
+  '((((class color) (background dark)) :foreground "#e5c07b")
+    (((class color) (background light)) :foreground "#b08000")
+    (t :inherit warning))
+  "Face for validation checks requiring user feedback."
+  :group 'org-roam-todo-status)
+
 (defface org-roam-todo-status-header-key
   '((t :inherit font-lock-keyword-face))
   "Face for header labels."
@@ -214,7 +228,9 @@ TARGET-TYPE can be:
 
 (defun org-roam-todo-status--run-validations (todo workflow next-status)
   "Run validation hooks for NEXT-STATUS and return results list.
-TODO is the todo plist, WORKFLOW is the workflow struct."
+TODO is the todo plist, WORKFLOW is the workflow struct.
+Returns list of result plists with :hook, :status, :message, :name, :target.
+Status can be: pass, pending, fail, feedback, or error."
   (let* ((hooks (org-roam-todo-workflow-hooks workflow))
          (validate-key (intern (format ":validate-%s" next-status)))
          (fns (cdr (assq validate-key hooks)))
@@ -226,13 +242,25 @@ TODO is the todo plist, WORKFLOW is the workflow struct."
                  :actor 'human))
          (results '()))
     (dolist (fn fns)
-      (let ((result (condition-case err
-                        (progn (funcall fn event) 'pass)
-                      (user-error (cons 'fail (cadr err)))
-                      (error (cons 'error (error-message-string err))))))
+      (let* ((raw-result (condition-case err
+                             (funcall fn event)
+                           (user-error (list :fail (cadr err)))
+                           (error (list :error (error-message-string err)))))
+             ;; Parse the result: nil/:pass, (:pending "msg"), (:fail "msg"), (:feedback "msg"), (:error "msg")
+             (parsed (cond
+                      ;; Structured result: (:status "message") or (:status "message" :other-data...)
+                      ((and (listp raw-result) (keywordp (car raw-result)))
+                       (let ((status (car raw-result))
+                             (message (cadr raw-result)))
+                         (cons (intern (substring (symbol-name status) 1)) message)))
+                      ;; nil or :pass - validation passed
+                      ((or (null raw-result) (eq raw-result :pass))
+                       (cons 'pass nil))
+                      ;; Unknown - treat as pass
+                      (t (cons 'pass nil)))))
         (push (list :hook fn
-                    :status (if (eq result 'pass) 'pass (car result))
-                    :message (when (consp result) (cdr result))
+                    :status (car parsed)
+                    :message (cdr parsed)
                     :name (org-roam-todo-status--hook-name fn)
                     :target (org-roam-todo-status--hook-target fn))
               results)))
@@ -331,6 +359,17 @@ Full message is stored in help-echo property."
                   'help-echo msg)
     msg))
 
+(defun org-roam-todo-status--validation-display (res-status)
+  "Return (indicator . face) for RES-STATUS.
+RES-STATUS can be: pass, pending, fail, feedback, or error."
+  (pcase res-status
+    ('pass (cons "✓" 'org-roam-todo-status-validation-pass))
+    ('pending (cons "⧗" 'org-roam-todo-status-validation-pending))
+    ('feedback (cons "?" 'org-roam-todo-status-validation-feedback))
+    ('fail (cons "✗" 'org-roam-todo-status-validation-fail))
+    ('error (cons "!" 'org-roam-todo-status-validation-fail))
+    (_ (cons "·" 'font-lock-comment-face))))
+
 (defun org-roam-todo-status--insert-validations (todo workflow)
   "Insert validations section for TODO with WORKFLOW."
   (let* ((statuses (org-roam-todo-workflow-statuses workflow))
@@ -352,10 +391,9 @@ Full message is stored in help-echo property."
               (let* ((res-status (plist-get result :status))
                      (name (plist-get result :name))
                      (message (plist-get result :message))
-                     (indicator (if (eq res-status 'pass) "✓" "✗"))
-                     (face (if (eq res-status 'pass)
-                               'org-roam-todo-status-validation-pass
-                             'org-roam-todo-status-validation-fail)))
+                     (display (org-roam-todo-status--validation-display res-status))
+                     (indicator (car display))
+                     (face (cdr display)))
                 (magit-insert-section section (org-roam-todo-status-validation-section)
                   (oset section result result)
                   (insert "  ")
@@ -363,7 +401,7 @@ Full message is stored in help-echo property."
                   (insert " ")
                   (insert (org-roam-todo-status--propertize name face))
                   (insert "\n")
-                  ;; Show error message indented if failed
+                  ;; Show message indented if present (for non-pass states)
                   (when (and message (not (eq res-status 'pass)))
                     (insert "    ")
                     (insert (org-roam-todo-status--propertize
@@ -457,9 +495,8 @@ Full message is stored in help-echo property."
 (defun org-roam-todo-status-open-todo ()
   "Open the TODO file."
   (interactive)
-  (when-let* ((todo org-roam-todo-status--todo)
-              (file (plist-get todo :file)))
-    (find-file file)))
+  (when-let ((todo org-roam-todo-status--todo))
+    (org-roam-todo-do-open-todo todo)))
 
 (defun org-roam-todo-status-open-worktree ()
   "Open magit-status in the worktree, creating it if necessary."
@@ -476,6 +513,14 @@ Full message is stored in help-echo property."
     (user-error "No TODO in buffer"))
   (org-roam-todo-do-delegate org-roam-todo-status--todo t)
   (org-roam-todo-status-refresh))
+
+(defun org-roam-todo-status-review ()
+  "Review TODO changes and approve for external review."
+  (interactive)
+  (unless org-roam-todo-status--todo
+    (user-error "No TODO in buffer"))
+  (require 'org-roam-todo-wf-tools)
+  (org-roam-todo-wf-tools-review org-roam-todo-status--todo))
 
 (defun org-roam-todo-status-open-list ()
   "Open the TODO list buffer, replacing current window."
@@ -724,6 +769,7 @@ Priority:
     (define-key map (kbd "w") #'org-roam-todo-status-open-worktree)
     (define-key map (kbd "d") #'org-roam-todo-status-delegate)
     (define-key map (kbd "l") #'org-roam-todo-status-open-list)
+    (define-key map (kbd "v") #'org-roam-todo-status-review)
     (define-key map (kbd "q") #'quit-window)
     ;; Git prefix
     (define-key map (kbd "m r") #'org-roam-todo-status-git-fetch-rebase)

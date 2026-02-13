@@ -133,10 +133,10 @@ Preferred: use `:fetch-before-create' in `org-roam-todo-project-config' instead.
     "mcp__emacs__magit_log"
     "mcp__emacs__magit_stage"
     "mcp__emacs__magit_commit_propose"
-    "mcp__emacs__todo_current"
-    "mcp__emacs__todo_add_progress"
-    "mcp__emacs__todo_check_acceptance"
-    "mcp__emacs__todo_update_status"
+    "mcp__emacs__todo_start"
+    "mcp__emacs__todo_advance"
+    "mcp__emacs__todo_regress"
+    "mcp__emacs__todo_reject"
     "mcp__emacs__kb_search"
     "mcp__emacs__kb_get"
     "mcp__emacs__edit"
@@ -1016,6 +1016,14 @@ Returns the agent buffer on success."
   "Get entries for the TODO list."
   (org-roam-todo-query-todos))
 
+(defun org-roam-todo-do-open-todo (todo)
+  "Open the TODO file for TODO."
+  (let ((file (plist-get todo :file)))
+    (unless file
+      (user-error "No file associated with this TODO"))
+    (find-file file)))
+
+;; Compatibility alias
 (defun org-roam-todo--open-todo-file (file)
   "Open the TODO FILE."
   (find-file file))
