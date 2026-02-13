@@ -179,93 +179,12 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
       (let ((buffer-name (org-roam-todo-wf-tools--spawn-agent worktree-path todo)))
         (format "Delegated to agent: %s\nWorktree: %s" buffer-name worktree-path)))))
 
-(defvar org-roam-todo-wf-tools--review-file nil
-  "File path of TODO being reviewed (buffer-local).")
-
-(defun org-roam-todo-wf-tools--review-approve ()
-  "Approve the TODO being reviewed."
-  (interactive)
-  (when org-roam-todo-wf-tools--review-file
-    (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "APPROVED" "t")
-    ;; Clear needs-review flag
-    (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "NEEDS_REVIEW" nil)
-    (message "Approved! Advancing to review status...")
-    (sit-for 0.5)
-    (org-roam-todo-wf-tools-advance org-roam-todo-wf-tools--review-file)
-    (quit-window t)
-    ;; Refresh todo-status buffer if it exists
-    (when (featurep 'org-roam-todo-status)
-      (dolist (buf (buffer-list))
-        (with-current-buffer buf
-          (when (derived-mode-p 'org-roam-todo-status-mode)
-            (org-roam-todo-status-refresh)))))
-    (message "TODO advanced to review status")))
-
-(defun org-roam-todo-wf-tools--review-reject ()
-  "Reject the TODO being reviewed with optional feedback."
-  (interactive)
-  (when org-roam-todo-wf-tools--review-file
-    (let ((feedback (read-string "Rejection reason (optional): ")))
-      (when (and feedback (not (string-empty-p feedback)))
-        (org-roam-todo-wf-tools--set-property 
-         org-roam-todo-wf-tools--review-file 
-         "REVIEW_FEEDBACK" 
-         feedback))
-      ;; Clear needs-review flag
-      (org-roam-todo-wf-tools--set-property org-roam-todo-wf-tools--review-file "NEEDS_REVIEW" nil)
-      (message "Rejected. Regressing to active status...")
-      (sit-for 0.5)
-      (org-roam-todo-wf-tools-regress org-roam-todo-wf-tools--review-file)
-      (quit-window t)
-      ;; Refresh todo-status buffer if it exists
-      (when (featurep 'org-roam-todo-status)
-        (dolist (buf (buffer-list))
-          (with-current-buffer buf
-            (when (derived-mode-p 'org-roam-todo-status-mode)
-              (org-roam-todo-status-refresh)))))
-      (message "TODO regressed to active status"))))
-
-(defun org-roam-todo-wf-tools-review (&optional todo-or-id)
-  "Review TODO changes and approve for external review.
-Opens a log view showing all commits unique to the branch with diffs.
-Press '?' to see review commands.
-TODO-OR-ID can be a TODO plist, file path, title, or ID.  Defaults to current TODO."
-  (interactive)
-  (let* ((todo (if (and (listp todo-or-id) (plist-get todo-or-id :file))
-                   todo-or-id  ; Already a TODO plist
-                 (org-roam-todo-wf-tools--get-todo todo-or-id)))
-         (file (plist-get todo :file)))
-    (unless todo
-      (user-error "TODO not found: %s" (or todo-or-id "current")))
-    (let ((needs-review (plist-get todo :needs-review))
-          (worktree-path (plist-get todo :worktree-path))
-          (worktree-branch (plist-get todo :worktree-branch)))
-      ;; Validate that this TODO needs review
-      (unless (equal needs-review "t")
-        (user-error "This TODO is not marked for review (NEEDS_REVIEW property not set)"))
-      ;; Validate worktree
-      (unless worktree-path
-        (user-error "No worktree exists - call todo-start first"))
-      (unless worktree-branch
-        (user-error "No worktree branch configured"))
-      ;; Get the target branch to diff against
-      (require 'org-roam-todo-wf-actions)
-      (let* ((workflow (org-roam-todo-wf--get-workflow todo))
-             (target-branch (org-roam-todo-wf--get-target-branch todo workflow))
-             (default-directory worktree-path))
-        (unless target-branch
-          (user-error "No rebase target configured for this workflow"))
-        ;; Show log with diffs for commits unique to this branch
-        ;; Using target..HEAD shows only commits on current branch not in target
-        (require 'magit-log)
-        (let ((buf (magit-log-other (list (format "%s..HEAD" target-branch)) '("--patch"))))
-          ;; Set buffer-local review file
-          (with-current-buffer buf
-            (setq-local org-roam-todo-wf-tools--review-file file)
-            ;; Add keybindings to the magit log buffer
-            (local-set-key (kbd "a") #'org-roam-todo-wf-tools--review-approve)
-            (local-set-key (kbd "r") #'org-roam-todo-wf-tools--review-reject))
-          (message "Review commands: [a] approve & advance, [r] reject & regress, [q] quit"))))))
+;;; NOTE: Review functionality has been moved to org-roam-todo-status.el
+;;; The review flow now uses the status buffer directly:
+;;; - "Awaiting Review" notice shows when NEEDS_REVIEW is set
+;;; - v a: approve and advance
+;;; - v r: reject and regress  
+;;; - a (advance): auto-approves if review is pending
 
 ;;; ============================================================
 ;;; Agent Spawning

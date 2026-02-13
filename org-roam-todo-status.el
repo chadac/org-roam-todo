@@ -409,6 +409,31 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
                              'font-lock-comment-face))
                     (insert "\n")))))))))))
 
+(defun org-roam-todo-status--needs-review-p (todo)
+  "Return non-nil if TODO needs user review.
+This checks for NEEDS_REVIEW property, indicating the PR is ready 
+and waiting for user approval before advancing to external review."
+  (equal (plist-get todo :needs-review) "t"))
+
+(defun org-roam-todo-status--insert-review-notice (todo)
+  "Insert review notice section if TODO needs user review."
+  (when (org-roam-todo-status--needs-review-p todo)
+    (insert "\n")
+    (insert (org-roam-todo-status--propertize "⚠ Awaiting Review" 
+                                               '(:foreground "gold" :weight bold)))
+    (insert "\n")
+    (insert (org-roam-todo-status--propertize 
+             "  This PR is ready for your review before requesting external review.\n"
+             'font-lock-comment-face))
+    (insert "  ")
+    (insert (org-roam-todo-status--propertize "v a" 'org-roam-todo-status-action-key))
+    (insert " ")
+    (insert (org-roam-todo-status--propertize "Approve" 'font-lock-comment-face))
+    (insert "  ")
+    (insert (org-roam-todo-status--propertize "v r" 'org-roam-todo-status-action-key))
+    (insert " ")
+    (insert (org-roam-todo-status--propertize "Reject" 'font-lock-comment-face))
+    (insert "\n")))
 
 (defun org-roam-todo-status--insert-sections ()
   "Insert all sections into the buffer."
@@ -418,6 +443,8 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
       (org-roam-todo-status--insert-header todo workflow)
       (insert "\n")
       (org-roam-todo-status--insert-validations todo workflow)
+      ;; Show review notice if applicable
+      (org-roam-todo-status--insert-review-notice todo)
       (insert "\n")
       ;; Hint line
       (insert (org-roam-todo-status--propertize "RET" 'org-roam-todo-status-action-key))
@@ -467,9 +494,17 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
           :worktree-branch (org-roam-todo-get-file-property file "WORKTREE_BRANCH"))))
 
 (defun org-roam-todo-status-advance ()
-  "Advance TODO to the next status."
+  "Advance TODO to the next status.
+If the TODO is awaiting review (NEEDS_REVIEW is set), this will
+automatically approve and advance, acting as a shortcut for `v a'."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
+    ;; If awaiting review, auto-approve first
+    (when (org-roam-todo-status--needs-review-p todo)
+      (let ((file (plist-get todo :file)))
+        (require 'org-roam-todo-wf-tools)
+        (org-roam-todo-wf-tools--set-property file "APPROVED" "t")
+        (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)))
     (let ((result (org-roam-todo-do-advance todo)))
       (org-roam-todo-status-refresh)
       (message "Advanced: %s → %s" (cdr result) (car result)))))
@@ -515,12 +550,68 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
   (org-roam-todo-status-refresh))
 
 (defun org-roam-todo-status-review ()
-  "Review TODO changes and approve for external review."
+  "View the diff for this TODO's branch against the target branch.
+Opens a magit log view showing all commits unique to the branch with diffs.
+Use `v a' to approve or `v r' to reject from the status buffer."
   (interactive)
   (unless org-roam-todo-status--todo
     (user-error "No TODO in buffer"))
-  (require 'org-roam-todo-wf-tools)
-  (org-roam-todo-wf-tools-review org-roam-todo-status--todo))
+  (let* ((todo org-roam-todo-status--todo)
+         (worktree-path (plist-get todo :worktree-path))
+         (workflow (org-roam-todo-wf--get-workflow todo))
+         (config (org-roam-todo-workflow-config workflow))
+         (target-branch (or (plist-get todo :target-branch)
+                            (plist-get config :rebase-target)
+                            "origin/main")))
+    (unless worktree-path
+      (user-error "No worktree exists"))
+    (unless (file-directory-p worktree-path)
+      (user-error "Worktree not found: %s" worktree-path))
+    (let ((default-directory worktree-path))
+      (require 'magit-log)
+      (magit-log-other (list (format "%s..HEAD" target-branch)) '("--patch")))))
+
+(defun org-roam-todo-status-review-approve ()
+  "Approve the TODO for external review.
+Sets APPROVED property and advances from ready to review status."
+  (interactive)
+  (unless org-roam-todo-status--todo
+    (user-error "No TODO in buffer"))
+  (let* ((todo org-roam-todo-status--todo)
+         (file (plist-get todo :file)))
+    (unless (org-roam-todo-status--needs-review-p todo)
+      (user-error "This TODO is not awaiting review"))
+    ;; Set APPROVED property
+    (require 'org-roam-todo-wf-tools)
+    (org-roam-todo-wf-tools--set-property file "APPROVED" "t")
+    ;; Clear NEEDS_REVIEW flag
+    (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)
+    ;; Advance to next status
+    (let ((result (org-roam-todo-do-advance todo)))
+      (org-roam-todo-status-refresh)
+      (message "Approved and advanced: %s → %s" (cdr result) (car result)))))
+
+(defun org-roam-todo-status-review-reject ()
+  "Reject the TODO and regress to active status for more work.
+Optionally records feedback for the rejection."
+  (interactive)
+  (unless org-roam-todo-status--todo
+    (user-error "No TODO in buffer"))
+  (let* ((todo org-roam-todo-status--todo)
+         (file (plist-get todo :file)))
+    (unless (org-roam-todo-status--needs-review-p todo)
+      (user-error "This TODO is not awaiting review"))
+    ;; Get optional feedback
+    (let ((feedback (read-string "Rejection reason (optional): ")))
+      (require 'org-roam-todo-wf-tools)
+      (when (and feedback (not (string-empty-p feedback)))
+        (org-roam-todo-wf-tools--set-property file "REVIEW_FEEDBACK" feedback))
+      ;; Clear NEEDS_REVIEW flag
+      (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)
+      ;; Regress to previous status
+      (let ((result (org-roam-todo-do-regress todo)))
+        (org-roam-todo-status-refresh)
+        (message "Rejected and regressed: %s → %s" (cdr result) (car result))))))
 
 (defun org-roam-todo-status-open-list ()
   "Open the TODO list buffer, replacing current window."
@@ -744,6 +835,10 @@ Priority:
    [("o" "Open TODO file" org-roam-todo-status-open-todo)
     ("w" "Worktree (magit)" org-roam-todo-status-open-worktree)
     ("d" "Delegate to agent" org-roam-todo-status-delegate)]]
+  ["Review"
+   [("v a" "Approve review" org-roam-todo-status-review-approve)
+    ("v r" "Reject review" org-roam-todo-status-review-reject)
+    ("v d" "View diff" org-roam-todo-status-review)]]
   ["Git"
    [("m r" "Fetch & rebase" org-roam-todo-status-git-fetch-rebase)
     ("m p" "Fetch, rebase & push" org-roam-todo-status-git-fetch-rebase-push)
@@ -769,8 +864,11 @@ Priority:
     (define-key map (kbd "w") #'org-roam-todo-status-open-worktree)
     (define-key map (kbd "d") #'org-roam-todo-status-delegate)
     (define-key map (kbd "l") #'org-roam-todo-status-open-list)
-    (define-key map (kbd "v") #'org-roam-todo-status-review)
     (define-key map (kbd "q") #'quit-window)
+    ;; Review prefix (v a = approve, v r = reject, v d = view diff)
+    (define-key map (kbd "v a") #'org-roam-todo-status-review-approve)
+    (define-key map (kbd "v r") #'org-roam-todo-status-review-reject)
+    (define-key map (kbd "v d") #'org-roam-todo-status-review)
     ;; Git prefix
     (define-key map (kbd "m r") #'org-roam-todo-status-git-fetch-rebase)
     (define-key map (kbd "m p") #'org-roam-todo-status-git-fetch-rebase-push)

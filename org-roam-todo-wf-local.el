@@ -27,10 +27,25 @@
 
 (require 'org-roam-todo-wf)
 (require 'org-roam-todo-wf-actions)
+(require 'org-roam-todo-wf-tools)
 
 ;;; ============================================================
 ;;; Local Workflow Hooks
 ;;; ============================================================
+
+(defun org-roam-todo-wf-local--set-needs-review (event)
+  "Set NEEDS_REVIEW property to t for local review.
+EVENT is the workflow event context."
+  (let ((file (plist-get (org-roam-todo-event-todo event) :file)))
+    (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" "t")))
+
+(defun org-roam-todo-wf-local--require-user-approval (event)
+  "Validate: user has approved the changes for merge.
+EVENT is the workflow event context.
+Checks for APPROVED property in the TODO."
+  (let ((approved (org-roam-todo-prop event "APPROVED")))
+    (unless approved
+      (user-error "Not approved for merge. Use 'v a' to approve after reviewing changes"))))
 
 (defun org-roam-todo-wf-local--open-magit-review (event)
   "Open magit diff to review changes against target branch.
@@ -98,12 +113,14 @@ Lifecycle:
                          org-roam-todo-wf--require-clean-worktree
                          org-roam-todo-wf--require-rebase-clean))
 
-    ;; When entering review: rebase onto target and open magit for review
+    ;; When entering review: rebase onto target, set needs-review, open magit
     (:on-enter-review . (org-roam-todo-wf--rebase-onto-target
+                         org-roam-todo-wf-local--set-needs-review
                          org-roam-todo-wf-local--open-magit-review))
 
-    ;; Validation before done: ensure ff-merge will succeed
-    (:validate-done . (org-roam-todo-wf--require-target-clean
+    ;; Validation before done: user approval and ff-merge requirements
+    (:validate-done . (org-roam-todo-wf-local--require-user-approval
+                       org-roam-todo-wf--require-target-clean
                        org-roam-todo-wf--require-ff-possible))
 
     ;; When entering done: merge, push, and cleanup everything
