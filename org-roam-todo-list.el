@@ -610,6 +610,60 @@ Searches existing TODOs for the project root path."
     (cl-loop for todo in todos
              when (string= (plist-get todo :project-name) project-name)
              return (plist-get todo :project-root))))
+
+;;; ============================================================
+;;; Fast TODO Writeup (Expert Integration)
+;;; ============================================================
+
+;; Forward declaration for expert function
+(declare-function claude-agent-expert-mcp-ask "claude-agent-expert")
+
+(defun org-roam-todo-fast-writeup--send-to-expert (project-root description)
+  "Send DESCRIPTION to the expert for PROJECT-ROOT to create a TODO.
+Returns the result from the expert system."
+  (require 'claude-agent-expert)
+  (let ((prompt (format "Please create a new TODO for this project based on the following description. \
+Use the org-roam-todo-capture function or create the TODO file directly following the project's TODO template.
+
+Description:
+%s
+
+After creating the TODO, provide a brief summary of what was created." description)))
+    (claude-agent-expert-mcp-ask project-root prompt)))
+
+;;;###autoload
+(defun org-roam-todo-fast-writeup ()
+  "Quickly create a TODO by describing it to the project expert.
+Prompts for project selection, then for a description.
+The expert will create an appropriate TODO based on the description."
+  (interactive)
+  (let* ((project-root (org-roam-todo--select-project))
+         (description (read-string "Describe the TODO: ")))
+    (when (string-empty-p description)
+      (user-error "Description cannot be empty"))
+    (message "Sending to project expert...")
+    (org-roam-todo-fast-writeup--send-to-expert project-root description)
+    (message "Request sent to expert for %s"
+             (org-roam-todo-project-name project-root))))
+
+;;;###autoload
+(defun org-roam-todo-fast-writeup-project ()
+  "Quickly create a TODO for the current project by describing it to the expert.
+Infers the project from the current context, then prompts for a description.
+The expert will create an appropriate TODO based on the description."
+  (interactive)
+  (let* ((project-root (org-roam-todo-infer-project))
+         (description (read-string (format "Describe TODO for %s: "
+                                           (org-roam-todo-project-name project-root)))))
+    (unless project-root
+      (user-error "Could not infer project from current context"))
+    (when (string-empty-p description)
+      (user-error "Description cannot be empty"))
+    (message "Sending to project expert...")
+    (org-roam-todo-fast-writeup--send-to-expert project-root description)
+    (message "Request sent to expert for %s"
+             (org-roam-todo-project-name project-root))))
+
 ;;; ============================================================
 ;;; Keymaps
 ;;; ============================================================
@@ -733,20 +787,25 @@ If called interactively, prompts for the project name."
 ;; Global TODO keymap (C-c n t):
 (define-key org-roam-todo-global-map (kbd "t") #'org-roam-todo-capture)
 (define-key org-roam-todo-global-map (kbd "l") #'org-roam-todo-list)
+(define-key org-roam-todo-global-map (kbd "f") #'org-roam-todo-fast-writeup)
 
 ;; Project-scoped keymap (C-c n p):
 (define-key org-roam-todo-project-map (kbd "t") #'org-roam-todo-capture-project)
 (define-key org-roam-todo-project-map (kbd "l") #'org-roam-todo-list-for-project)
+(define-key org-roam-todo-project-map (kbd "f") #'org-roam-todo-fast-writeup-project)
 
 ;;;###autoload
 (defun org-roam-todo-setup-keybindings ()
   "Set up org-roam-todo keybindings under C-c n prefix.
 
 Bindings:
-  \\[org-roam-todo-capture] - Capture a new TODO
-  \\[org-roam-todo-list] - List all TODOs
-  \\[org-roam-todo-capture-for-project] - Capture TODO (project inferred)
-  \\[org-roam-todo-list-for-project] - List project TODOs"
+  C-c n t t - Capture a new TODO (prompts for project)
+  C-c n t l - List all TODOs
+  C-c n t f - Fast TODO writeup via expert (prompts for project)
+  C-c n p t - Capture TODO for current project
+  C-c n p l - List TODOs for current project
+  C-c n p f - Fast TODO writeup via expert for current project
+  C-x j     - Open TODO status buffer"
   (interactive)
   ;; Create C-c n prefix if it doesn't exist
   (unless (keymapp (lookup-key global-map (kbd "C-c n")))
