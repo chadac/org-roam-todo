@@ -102,51 +102,228 @@ Preferred: use `:fetch-before-create' in `org-roam-todo-project-config' instead.
   :group 'org-roam-todo)
 
 (defcustom org-roam-todo-agent-allowed-tools
-  '("Read(**)"
-    "Glob(**)"
-    "Grep(**)"
-    "Bash(git *)"
-    "Bash(npm *)"
-    "Bash(npx *)"
-    "Bash(yarn *)"
-    "Bash(pnpm *)"
-    "Bash(make *)"
-    "Bash(cargo *)"
-    "Bash(uv *)"
-    "Bash(pytest *)"
-    "Bash(python *)"
-    "Bash(ruff *)"
-    "Bash(ls *)"
-    "Bash(find *)"
-    "Bash(cat *)"
-    "Bash(head *)"
-    "Bash(tail *)"
-    "Bash(grep *)"
-    "Bash(rg *)"
-    "Bash(wc *)"
-    "Bash(diff *)"
-    "Bash(tree *)"
-    "mcp__emacs__read_file"
-    "mcp__emacs__read_buffer"
-    "mcp__emacs__magit_status"
-    "mcp__emacs__magit_diff"
-    "mcp__emacs__magit_log"
-    "mcp__emacs__magit_stage"
-    "mcp__emacs__magit_commit_propose"
-    "mcp__emacs__todo_start"
-    "mcp__emacs__todo_advance"
-    "mcp__emacs__todo_regress"
-    "mcp__emacs__todo_reject"
-    "mcp__emacs__kb_search"
-    "mcp__emacs__kb_get"
-    "mcp__emacs__edit"
-    "mcp__emacs__unlock"
-    "mcp__emacs__request_attention")
+  '(;; === Core File Operations ===
+    ;; These are fundamental tools Claude Code uses for reading and writing files.
+    ;; Agents need full recursive access to the worktree and related directories.
+    "Read(**)"                          ; Read any file - essential for exploration (1425 calls)
+    "Write(**)"                         ; Write files - needed for creating new code (54 calls)
+    "Edit(**)"                          ; Edit files - core editing functionality (189 calls)
+    "Glob(**)"                          ; Find files by pattern - essential for navigation (305 calls)
+    "Grep(**)"                          ; Search file contents - essential for code search (2244 calls)
+
+    ;; === Shell Commands: Version Control ===
+    ;; Git operations are fundamental for all TODO workflows.
+    "Bash(git *)"                       ; All git operations (299 calls)
+
+    ;; === Shell Commands: Build & Package Managers ===
+    ;; These are commonly used for running builds and tests.
+    ;; Node.js ecosystem
+    "Bash(npm *)"                       ; npm commands (install, run, test, etc.)
+    "Bash(npx *)"                       ; npx for running tools
+    "Bash(yarn *)"                      ; yarn package manager
+    "Bash(pnpm *)"                      ; pnpm package manager
+    ;; Python ecosystem
+    "Bash(uv *)"                        ; uv for Python (run, pip, sync, etc.) (40 calls)
+    "Bash(python *)"                    ; Python interpreter (15 calls)
+    "Bash(python3 *)"                   ; Python 3 explicitly (27 calls)
+    "Bash(pytest *)"                    ; Pytest test runner
+    "Bash(ruff *)"                      ; Ruff linter/formatter
+    "Bash(pip *)"                       ; Python package management
+    "Bash(pip3 *)"                      ; Python 3 package management
+    ;; Build systems
+    "Bash(make *)"                      ; Makefile builds (19 calls)
+    "Bash(cargo *)"                     ; Rust build system
+    "Bash(just *)"                      ; Just command runner (257 calls)
+    ;; Elisp development
+    "Bash(emacs *)"                     ; Batch elisp evaluation (193 calls)
+    "Bash(cask *)"                      ; Elisp project testing (45 calls)
+
+    ;; === Shell Commands: File System Operations ===
+    ;; Common shell commands for exploring and manipulating files.
+    "Bash(ls *)"                        ; List files (232 calls)
+    "Bash(find *)"                      ; Find files (196 calls)
+    "Bash(cat *)"                       ; View file contents (112 calls)
+    "Bash(head *)"                      ; View file start (22 calls)
+    "Bash(tail *)"                      ; View file end (8 calls)
+    "Bash(tree *)"                      ; Directory tree view
+    "Bash(wc *)"                        ; Word/line count (40 calls)
+    "Bash(diff *)"                      ; File differences (9 calls)
+    "Bash(grep *)"                      ; Search in files (323 calls)
+    "Bash(rg *)"                        ; Ripgrep search
+    "Bash(mkdir *)"                     ; Create directories (5 calls)
+    "Bash(cp *)"                        ; Copy files (7 calls)
+    "Bash(rm *)"                        ; Remove files (24 calls)
+    "Bash(echo *)"                      ; Echo output (scripts, redirects) (9 calls)
+    "Bash(cd *)"                        ; Change directory (138 calls)
+    "Bash(pwd)"                         ; Print working directory (15 calls)
+    "Bash(which *)"                     ; Find binaries (10 calls)
+    "Bash(touch *)"                     ; Create/update file timestamps (10 calls)
+    "Bash(sleep *)"                     ; Sleep/wait for timing (9 calls)
+    "Bash(sed *)"                       ; Text transformations (32 calls)
+
+    ;; === Shell Commands: Development Tools ===
+    ;; Additional development and debugging tools.
+    "Bash(gh *)"                        ; GitHub CLI
+    "Bash(nix *)"                       ; Nix commands
+    "Bash(nix-shell *)"                 ; Nix shell environments
+
+    ;; === Emacs MCP: Buffer & File Operations ===
+    ;; Core Emacs integration for file handling.
+    "mcp__emacs__read_file"             ; Read files with diagnostics (2328 calls)
+    "mcp__emacs__read_buffer"           ; Read buffer contents (33 calls)
+    "mcp__emacs__lock_file"             ; Lock file for editing (202 calls)
+    "mcp__emacs__lock_buffer"           ; Lock buffer for editing
+    "mcp__emacs__lock"                  ; Lock region for editing (1472 calls)
+    "mcp__emacs__unlock"                ; Release locks (96 calls)
+    "mcp__emacs__edit"                  ; Apply edits to locked regions (1531 calls)
+    "mcp__emacs__locks"                 ; Multiple locks (41 calls)
+    "mcp__emacs__edits"                 ; Multiple edits (26 calls)
+    "mcp__emacs__unlocks"               ; Multiple unlocks
+    "mcp__emacs__save_buffer"           ; Save buffer to disk (9 calls)
+    "mcp__emacs__search_buffer"         ; Search in buffer (44 calls)
+    "mcp__emacs__get_buffer_content"    ; Get buffer content (34 calls)
+    "mcp__emacs__list_buffers"          ; List all buffers (13 calls)
+    "mcp__emacs__buffer_info"           ; Get buffer metadata (12 calls)
+
+    ;; === Emacs MCP: Git Operations ===
+    ;; Git integration through both magit and direct git tools.
+    ;; Magit-based tools
+    "mcp__emacs__magit_status"          ; Git status (223 calls)
+    "mcp__emacs__magit_stage"           ; Stage files (166 calls)
+    "mcp__emacs__magit_unstage"         ; Unstage files (5 calls)
+    "mcp__emacs__magit_diff"            ; View diffs (102 calls)
+    "mcp__emacs__magit_log"             ; View commit log (26 calls)
+    "mcp__emacs__magit_commit_propose"  ; Propose commits (48 calls)
+    "mcp__emacs__magit_commit_status"   ; Check commit status (11 calls)
+    "mcp__emacs__magit_branch"          ; Branch info
+    "mcp__emacs__magit_show"            ; Show commit content
+    "mcp__emacs__magit_blame"           ; Git blame
+    "mcp__emacs__magit_stash_list"      ; List stashes
+    "mcp__emacs__magit_stash_push"      ; Create stash
+    "mcp__emacs__magit_stash_pop"       ; Pop stash
+    "mcp__emacs__magit_remote"          ; Remote info
+    "mcp__emacs__magit_file_log"        ; File history
+    ;; Direct git tools (non-magit)
+    "mcp__emacs__git_status"            ; Git status (28 calls)
+    "mcp__emacs__git_stage"             ; Stage files (14 calls)
+    "mcp__emacs__git_unstage"           ; Unstage files
+    "mcp__emacs__git_diff"              ; View diffs (12 calls)
+    "mcp__emacs__git_log"               ; Commit log (6 calls)
+    "mcp__emacs__git_commit"            ; Create commits (13 calls)
+    "mcp__emacs__git_commit_propose"    ; Propose commits
+    "mcp__emacs__git_commit_status"     ; Check commit status (3 calls)
+    "mcp__emacs__git_amend"             ; Amend commits (5 calls)
+    "mcp__emacs__git_show"              ; Show commit details
+    "mcp__emacs__git_blame"             ; Git blame
+    "mcp__emacs__git_rebase"            ; Rebase operations (7 calls)
+    "mcp__emacs__git_rebase_interactive" ; Interactive rebase
+    "mcp__emacs__git_rebase_interactive_get_commits" ; Get commits for rebase
+    "mcp__emacs__git_ignore"            ; Ignore files
+    "mcp__emacs__git_branch"            ; Branch info
+    "mcp__emacs__git_remote"            ; Remote info
+    "mcp__emacs__git_tags"              ; List tags
+    "mcp__emacs__git_rev_parse"         ; Resolve revisions
+    "mcp__emacs__git_stash_list"        ; List stashes
+    "mcp__emacs__git_stash_push"        ; Create stash
+    "mcp__emacs__git_stash_pop"         ; Pop stash
+    "mcp__emacs__git_file_log"          ; File history
+    "mcp__emacs__git_checkout_file"     ; Checkout file from revision
+
+    ;; === Emacs MCP: TODO Workflow Operations ===
+    ;; Tools for managing TODO status and workflow.
+    "mcp__emacs__todo_start"            ; Start a TODO
+    "mcp__emacs__todo_advance"          ; Advance to next status (90 calls)
+    "mcp__emacs__todo_regress"          ; Move back to previous status
+    "mcp__emacs__todo_reject"           ; Reject/abandon TODO
+    "mcp__emacs__todo_delegate"         ; Delegate to agent
+    "mcp__emacs__todo_create"           ; Create new TODOs (10 calls)
+    "mcp__emacs__todo_current"          ; Get current TODO context (76 calls)
+    "mcp__emacs__todo_check_acceptance" ; Check acceptance criteria (132 calls)
+    "mcp__emacs__todo_add_progress"     ; Add progress log entries (123 calls)
+    "mcp__emacs__todo_stage_changes"    ; Stage TODO-related changes (32 calls)
+    "mcp__emacs__todo_acceptance_criteria" ; Get acceptance criteria (32 calls)
+    "mcp__emacs__todo_update_acceptance" ; Update acceptance criteria (25 calls)
+    "mcp__emacs__todo_watch_status"     ; Watch TODO status changes
+
+    ;; === Emacs MCP: Knowledge Base ===
+    ;; Access project knowledge base for context.
+    "mcp__emacs__kb_search"             ; Search KB entries (32 calls)
+    "mcp__emacs__kb_get"                ; Get KB entry details
+    "mcp__emacs__kb_list"               ; List all KB entries
+    "mcp__emacs__kb_create"             ; Create KB entries
+    "mcp__emacs__kb_update"             ; Update KB entries
+
+    ;; === Emacs MCP: Expert System ===
+    ;; Access project expert agents for deep knowledge.
+    "mcp__emacs__ask_the_expert"        ; Query project expert (5 calls)
+    "mcp__emacs__list_experts"          ; List available experts (5 calls)
+    "mcp__emacs__expert_kb"             ; Access expert knowledge base
+    "mcp__emacs__expert_respond"        ; Expert response (for expert agents)
+
+    ;; === Emacs MCP: Evaluation & Development ===
+    ;; For elisp development and testing.
+    "mcp__emacs__eval"                  ; Evaluate elisp (782 calls)
+    "mcp__emacs__async_eval"            ; Async evaluation (74 calls)
+    "mcp__emacs__reload_file"           ; Reload elisp files (235 calls)
+
+    ;; === Emacs MCP: Agent Coordination ===
+    ;; For multi-agent coordination and communication.
+    "mcp__emacs__whoami"                ; Get agent identity (45 calls)
+    "mcp__emacs__request_attention"     ; Request user attention (16 calls)
+    "mcp__emacs__list_agents"           ; List running agents (16 calls)
+    "mcp__emacs__spawn_agent"           ; Spawn sub-agents (16 calls)
+    "mcp__emacs__send_message"          ; Send message to another agent (10 calls)
+    "mcp__emacs__send_and_wait"         ; Send and await reply
+    "mcp__emacs__check_messages"        ; Check incoming messages (17 calls)
+    "mcp__emacs__message_board_summary" ; Get message summary (4 calls)
+
+    ;; === Emacs MCP: Session & Buffer Management ===
+    ;; For session control and buffer operations.
+    "mcp__emacs__restart_session"       ; Restart session for MCP reload (34 calls)
+    "mcp__emacs__clear_buffer"          ; Clear buffer content
+    "mcp__emacs__get_region"            ; Get region content
+
+    ;; === Emacs MCP: Interaction & UI ===
+    ;; For user interaction when needed.
+    "mcp__emacs__prompt_choice"         ; Present choices to user (8 calls)
+    "mcp__emacs__confirm"               ; Yes/no confirmation (6 calls)
+    "mcp__emacs__show_proposal"         ; Show proposal for review (15 calls)
+    "mcp__emacs__multiselect"           ; Multi-selection UI
+    "mcp__emacs__pick_file"             ; File picker
+    "mcp__emacs__pick_directory"        ; Directory picker
+    "mcp__emacs__progress_start"        ; Start progress indicator
+    "mcp__emacs__progress_update"       ; Update progress
+    "mcp__emacs__progress_stop"         ; Stop progress indicator
+
+    ;; === Emacs MCP: Watch/Monitoring ===
+    ;; For monitoring async operations.
+    "mcp__emacs__watch_buffer"          ; Watch buffer until stable (4 calls)
+    "mcp__emacs__watch_for_pattern"     ; Watch for pattern in buffer (23 calls)
+    "mcp__emacs__watch_for_change"      ; Watch for any change
+    "mcp__emacs__send_and_watch"        ; Send input and watch result
+
+    ;; === Emacs MCP: Oneshot Operations ===
+    ;; For oneshot/single-task agent mode.
+    "mcp__emacs__done"                  ; Signal oneshot completion (4 calls)
+    "mcp__emacs__update_target")        ; Update target region
   "Base list of tools to pre-authorize for TODO worktree agents.
+
+This list is derived from empirical analysis of 302 historical claude-agent
+logs from worktree TODO sessions (Feb 2026). Tools are categorized by
+frequency of use and grouped by function.
+
+Highest-frequency tools (>100 calls across sessions):
+- mcp__emacs__read_file (2328), Grep (2244), Bash (2156)
+- mcp__emacs__edit (1531), mcp__emacs__lock (1472), Read (1425)
+- mcp__emacs__eval (782), Glob (305), mcp__emacs__reload_file (235)
+- mcp__emacs__magit_status (223), mcp__emacs__lock_file (202)
+- mcp__emacs__magit_stage (166), mcp__emacs__todo_check_acceptance (132)
+- mcp__emacs__todo_add_progress (123), mcp__emacs__magit_diff (102)
+
 These are combined with `org-roam-todo-agent-allowed-tools-extra' at runtime.
 Uses Claude Code permission pattern syntax:
 - ToolName(**) for recursive file access
-- Bash(pattern*) for specific bash commands
+- Bash(pattern *) for specific bash commands
 - mcp__server__tool for MCP tools"
   :type '(repeat string)
   :group 'org-roam-todo)
