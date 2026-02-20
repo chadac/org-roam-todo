@@ -915,5 +915,75 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
          (hooks (org-roam-todo-workflow-hooks wf)))
     (should (assq :validate-done hooks))))
 
+;;; ============================================================
+;;; User Approval Detection Tests (org-roam-todo-status)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-has-user-approval-validation-ready-status ()
+  "Test that ready status in PR workflow triggers user approval detection.
+When a TODO is in 'ready' status, the next status (review) has the
+user-approval validation, so `org-roam-todo-status--has-user-approval-validation-p'
+should return non-nil."
+  :tags '(:unit :wf :pr :status)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-status nil t)
+  (let* ((todo (list :file "/tmp/test-todo.org"
+                     :status "ready"
+                     :project-name nil)))
+    ;; The next status after "ready" is "review", which has require-user-approval
+    (should (org-roam-todo-status--has-user-approval-validation-p todo))))
+
+(ert-deftest wf-pr-test-has-user-approval-validation-ci-status ()
+  "Test that ci status does NOT trigger user approval detection.
+When a TODO is in 'ci' status, the next status (ready) does NOT have
+the user-approval validation."
+  :tags '(:unit :wf :pr :status)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-status nil t)
+  (let* ((todo (list :file "/tmp/test-todo.org"
+                     :status "ci"
+                     :project-name nil)))
+    ;; The next status after "ci" is "ready", which does NOT have require-user-approval
+    (should-not (org-roam-todo-status--has-user-approval-validation-p todo))))
+
+(ert-deftest wf-pr-test-needs-review-when-not-approved ()
+  "Test needs-review-p returns t when at ready status and not approved."
+  :tags '(:unit :wf :pr :status)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-status nil t)
+  (let* ((todo (list :file "/tmp/test-todo.org"
+                     :status "ready"
+                     :project-name nil
+                     :approved nil)))
+    (should (org-roam-todo-status--needs-review-p todo))))
+
+(ert-deftest wf-pr-test-needs-review-when-already-approved ()
+  "Test needs-review-p returns nil when already approved."
+  :tags '(:unit :wf :pr :status)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-status nil t)
+  (let* ((todo (list :file "/tmp/test-todo.org"
+                     :status "ready"
+                     :project-name nil
+                     :approved "t")))
+    (should-not (org-roam-todo-status--needs-review-p todo))))
+
+(ert-deftest wf-pr-test-needs-review-at-wrong-status ()
+  "Test needs-review-p returns nil when not at a status requiring approval."
+  :tags '(:unit :wf :pr :status)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-status nil t)
+  (let* ((todo (list :file "/tmp/test-todo.org"
+                     :status "ci"
+                     :project-name nil
+                     :approved nil)))
+    ;; Even though not approved, ci->ready doesn't require user approval
+    (should-not (org-roam-todo-status--needs-review-p todo))))
+
 (provide 'org-roam-todo-wf-pr-test)
 ;;; org-roam-todo-wf-pr-test.el ends here

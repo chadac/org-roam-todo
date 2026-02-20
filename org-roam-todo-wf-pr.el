@@ -385,11 +385,6 @@ Reads WORKTREE_PATH fresh from file."
           (user-error "No pull request found for current branch"))
         (forge--set-topic-review-requests repo pullreq reviewers)))))
 
-(defun org-roam-todo-wf-pr--set-needs-review (event)
-  "Set NEEDS_REVIEW property to t.
-EVENT is the workflow event context."
-  (let ((file (plist-get (org-roam-todo-event-todo event) :file)))
-    (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" "t")))
 
 (defun org-roam-todo-wf-pr--on-enter-ci (event)
   "Actions when entering CI status.
@@ -454,9 +449,8 @@ Requirements:
     (:validate-ready . (org-roam-todo-wf--require-acceptance-complete
                         org-roam-todo-wf-pr--require-ci-pass))
 
-    ;; When entering ready: mark PR ready for review, set needs-review flag
-    (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready
-                        org-roam-todo-wf-pr--set-needs-review))
+    ;; When entering ready: mark PR ready for review
+    (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready))
 
     ;; Validation before review: user must approve their own changes
     ;; Also: only AI agents (CI automation) can advance to review

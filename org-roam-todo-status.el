@@ -408,12 +408,28 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
                              (org-roam-todo-status--truncate-message message 60)
                              'font-lock-comment-face))
                     (insert "\n")))))))))))
+(defun org-roam-todo-status--has-user-approval-validation-p (todo)
+  "Return non-nil if the next status for TODO requires user approval.
+This checks if the validation hooks for the next status include
+`org-roam-todo-wf-pr--require-user-approval'."
+  (let* ((workflow (org-roam-todo-wf--get-workflow todo))
+         (statuses (org-roam-todo-workflow-statuses workflow))
+         (status (plist-get todo :status))
+         (current-idx (cl-position status statuses :test #'equal))
+         (next-status (when (and current-idx (< current-idx (1- (length statuses))))
+                        (nth (1+ current-idx) statuses))))
+    (when next-status
+      (let* ((hooks (org-roam-todo-workflow-hooks workflow))
+             (validate-key (intern (format ":validate-%s" next-status)))
+             (fns (cdr (assq validate-key hooks))))
+        (memq 'org-roam-todo-wf-pr--require-user-approval fns)))))
 
 (defun org-roam-todo-status--needs-review-p (todo)
   "Return non-nil if TODO needs user review.
-This checks for NEEDS_REVIEW property, indicating the PR is ready 
-and waiting for user approval before advancing to external review."
-  (equal (plist-get todo :needs-review) "t"))
+This checks if the next status has user approval validation AND
+the user hasn't already approved (APPROVED property is not set)."
+  (and (org-roam-todo-status--has-user-approval-validation-p todo)
+       (not (plist-get todo :approved))))
 
 (defun org-roam-todo-status--insert-review-notice (todo)
   "Insert review notice section if TODO needs user review."
@@ -491,20 +507,20 @@ and waiting for user approval before advancing to external review."
           :project-name (org-roam-todo-get-file-property file "PROJECT_NAME")
           :project-root (org-roam-todo-get-file-property file "PROJECT_ROOT")
           :worktree-path (org-roam-todo-get-file-property file "WORKTREE_PATH")
-          :worktree-branch (org-roam-todo-get-file-property file "WORKTREE_BRANCH"))))
+          :worktree-branch (org-roam-todo-get-file-property file "WORKTREE_BRANCH")
+          :approved (org-roam-todo-get-file-property file "APPROVED"))))
 
 (defun org-roam-todo-status-advance ()
   "Advance TODO to the next status.
-If the TODO is awaiting review (NEEDS_REVIEW is set), this will
+If the TODO requires user approval for the next status, this will
 automatically approve and advance, acting as a shortcut for `v a'."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
-    ;; If awaiting review, auto-approve first
+    ;; If awaiting review (user approval required), auto-approve first
     (when (org-roam-todo-status--needs-review-p todo)
       (let ((file (plist-get todo :file)))
         (require 'org-roam-todo-wf-tools)
-        (org-roam-todo-wf-tools--set-property file "APPROVED" "t")
-        (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)))
+        (org-roam-todo-wf-tools--set-property file "APPROVED" "t")))
     (let ((result (org-roam-todo-do-advance todo)))
       (org-roam-todo-status-refresh)
       (message "Advanced: %s → %s" (cdr result) (car result)))))
@@ -573,7 +589,8 @@ Use `v a' to approve or `v r' to reject from the status buffer."
 
 (defun org-roam-todo-status-review-approve ()
   "Approve the TODO for external review.
-Sets APPROVED property and advances from ready to review status."
+Sets APPROVED property and advances to the next status.
+Only available when the next status requires user approval validation."
   (interactive)
   (unless org-roam-todo-status--todo
     (user-error "No TODO in buffer"))
@@ -584,16 +601,15 @@ Sets APPROVED property and advances from ready to review status."
     ;; Set APPROVED property
     (require 'org-roam-todo-wf-tools)
     (org-roam-todo-wf-tools--set-property file "APPROVED" "t")
-    ;; Clear NEEDS_REVIEW flag
-    (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)
     ;; Advance to next status
     (let ((result (org-roam-todo-do-advance todo)))
       (org-roam-todo-status-refresh)
       (message "Approved and advanced: %s → %s" (cdr result) (car result)))))
 
 (defun org-roam-todo-status-review-reject ()
-  "Reject the TODO and regress to active status for more work.
-Optionally records feedback for the rejection."
+  "Reject the TODO and regress to the previous status for more work.
+Optionally records feedback for the rejection.
+Only available when the next status requires user approval validation."
   (interactive)
   (unless org-roam-todo-status--todo
     (user-error "No TODO in buffer"))
@@ -606,8 +622,6 @@ Optionally records feedback for the rejection."
       (require 'org-roam-todo-wf-tools)
       (when (and feedback (not (string-empty-p feedback)))
         (org-roam-todo-wf-tools--set-property file "REVIEW_FEEDBACK" feedback))
-      ;; Clear NEEDS_REVIEW flag
-      (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" nil)
       ;; Regress to previous status
       (let ((result (org-roam-todo-do-regress todo)))
         (org-roam-todo-status-refresh)
