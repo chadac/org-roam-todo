@@ -172,9 +172,7 @@
     (org-roam-todo-wf--only-human
      :name "Human action required"
      :target nil)
-    (org-roam-todo-wf--only-ai
-     :name "Automated action only"
-     :target nil))
+)
   "Alist mapping validation hooks to their display info.
 Each entry is (HOOK-FN :name NAME :target TARGET-TYPE).
 TARGET-TYPE can be:

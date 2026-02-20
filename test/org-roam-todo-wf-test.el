@@ -447,43 +447,13 @@
        (should (string-match-p "human action" (cadr err)))
        (should (string-match-p "AI agent" (cadr err)))))))
 
-(ert-deftest wf-test-only-ai-passes-for-ai ()
-  "Test that only-ai validation passes when actor is AI."
-  :tags '(:unit :wf :permissions)
-  (org-roam-todo-wf-test--require-wf)
-  (let ((event (make-org-roam-todo-event :type :validate-ci :actor 'ai)))
-    ;; Should not error
-    (should-not (org-roam-todo-wf--only-ai event))))
-
-(ert-deftest wf-test-only-ai-blocks-humans ()
-  "Test that only-ai validation blocks human actors."
-  :tags '(:unit :wf :permissions)
-  (org-roam-todo-wf-test--require-wf)
-  (let ((event (make-org-roam-todo-event :type :validate-ci :actor 'human)))
-    (should-error (org-roam-todo-wf--only-ai event)
-                  :type 'user-error)))
-
-(ert-deftest wf-test-only-ai-error-message ()
-  "Test that only-ai provides a clear error message."
-  :tags '(:unit :wf :permissions)
-  (org-roam-todo-wf-test--require-wf)
-  (let ((event (make-org-roam-todo-event :type :validate-ci :actor 'human)))
-    (condition-case err
-        (org-roam-todo-wf--only-ai event)
-      (user-error
-       (should (string-match-p "automated" (cadr err)))
-       (should (string-match-p "manually" (cadr err)))))))
-
 (ert-deftest wf-test-only-human-nil-actor-treated-as-human ()
   "Test that nil actor is treated as human (default)."
   :tags '(:unit :wf :permissions)
   (org-roam-todo-wf-test--require-wf)
   (let ((event (make-org-roam-todo-event :type :validate-done :actor nil)))
     ;; nil actor should be treated as human, so only-human passes
-    (should-not (org-roam-todo-wf--only-human event))
-    ;; and only-ai should fail
-    (should-error (org-roam-todo-wf--only-ai event)
-                  :type 'user-error)))
+    (should-not (org-roam-todo-wf--only-human event))))
 
 ;;; ============================================================
 ;;; Permission Hook Integration Tests
@@ -604,26 +574,7 @@
         ;; Status should not have changed
         (should (equal "a" (org-roam-todo-wf-test--get-file-property todo-file "STATUS")))))))
 
-(ert-deftest wf-test-change-status-defaults-to-human ()
-  "Test that change-status defaults to human actor when not specified."
-  :tags '(:unit :wf :permissions :integration)
-  (org-roam-todo-wf-test--require-wf)
-  (org-roam-todo-wf-test--require-mocker)
-  ;; Create a workflow where :validate-b uses only-ai (blocks humans)
-  (let* ((wf (make-org-roam-todo-workflow
-              :name 'default-actor-test
-              :statuses '("a" "b")
-              :hooks '((:validate-b . (org-roam-todo-wf--only-ai)))
-              :config nil)))
-    (org-roam-todo-wf-test-with-temp-todo
-        '(:title "Default Actor Test" :status "a")
-      (mocker-let
-          ((org-roam-todo-wf--get-workflow (todo)
-             ((:input-matcher #'always
-               :output wf))))
-        ;; No actor specified - should default to human and be blocked by only-ai
-        (should-error (org-roam-todo-wf--change-status todo-plist "b")
-                      :type 'user-error)))))
+
 
 (provide 'org-roam-todo-wf-test)
 ;;; org-roam-todo-wf-test.el ends here

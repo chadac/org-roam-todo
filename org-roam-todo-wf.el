@@ -522,39 +522,6 @@ WHAT TO DO:
    - MCP: mcp__emacs__request_attention with message explaining the situation"
                     new-status))))
 
-(defun org-roam-todo-wf--only-ai (event)
-  "Validation hook that blocks human interaction.
-Use in :validate-STATUS hooks for transitions that should be automated.
-Reads the actor from EVENT (set by `org-roam-todo-wf--change-status').
-
-Example uses:
-- CI completion (only the CI system should advance)
-- Automated deployments
-- Bot-managed status changes
-
-When a human attempts this transition, signals a user-error with
-a clear message indicating the transition is automated."
-  (unless (eq (org-roam-todo-event-actor event) 'ai)
-    (let ((new-status (org-roam-todo-event-new-status event)))
-      (user-error "This transition to '%s' is automated and cannot be done manually.
-
-This status change is handled automatically by the workflow system.
-
-WHAT THIS MEANS:
-Certain transitions are automated to ensure proper process:
-- CI completion (system advances when CI passes)
-- Automated deployments
-- Bot-managed status changes
-
-WHAT TO DO:
-1. Wait for the automated process to complete
-   - The workflow will advance automatically when conditions are met
-   - MCP: mcp__emacs__todo_watch_status to monitor progress
-
-2. If you need to bypass this (NOT RECOMMENDED):
-   - Check if there's a configuration option to allow manual override
-   - Consider whether the automation is working correctly"
-                    new-status))))
 
 (provide 'org-roam-todo-wf)
 ;;; org-roam-todo-wf.el ends here

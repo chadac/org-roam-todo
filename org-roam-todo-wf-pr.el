@@ -718,11 +718,8 @@ Requirements:
 
     ;; When entering ready: mark PR ready for review
     (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready))
-
     ;; Validation before review: user must approve their own changes
-    ;; Also: only AI agents (CI automation) can advance to review
-    (:validate-review . (org-roam-todo-wf--require-user-approval
-                         org-roam-todo-wf--only-ai))
+    (:validate-review . (org-roam-todo-wf--require-user-approval))
 
     ;; When entering review: request reviewers
     (:on-enter-review . (org-roam-todo-wf-pr--on-enter-review))
