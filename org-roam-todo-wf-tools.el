@@ -219,9 +219,7 @@ Returns the path to the created TODO file."
 %s
 
 ** Progress Log
-:PROPERTIES:
-:ID:       %s
-:END:
+
 "
                       id-timestamp
                       project-name
@@ -231,8 +229,7 @@ Returns the path to the created TODO file."
                       title
                       project-name
                       description-text
-                      criteria-text
-                      (org-id-uuid))))
+                      criteria-text)))
     
     ;; Sync with org-roam if available
     (when (fboundp 'org-roam-db-update-file)

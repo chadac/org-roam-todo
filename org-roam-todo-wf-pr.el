@@ -487,11 +487,11 @@ Requirements:
               :poll-interval 60       ; check every 60 seconds
               :timeout 3600           ; stop after 1 hour
               :feedback nil))         ; no feedback capture
-     
+
      ("ready" . (:on-pass "review"   ; advance when user approves
                  :on-fail "active"    ; regress if user rejects
                  :feedback t))        ; capture feedback on rejection
-     
+
      ("review" . (:on-pass "done"    ; advance when PR merged
                   :on-fail "active"   ; regress if PR closed
                   :feedback t)))      ; capture feedback from PR review
