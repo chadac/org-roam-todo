@@ -22,6 +22,14 @@
 ;; - Forward: always allowed
 ;; - Backward: review -> active (allowed if issues found during review)
 ;; - Rejected: always available to abandon the TODO
+;;
+;; Magit Buffer Display:
+;; When entering review status, magit-diff is opened to show changes.
+;; To avoid interrupting the user's workflow, magit buffers are configured
+;; to appear in a side window (right side, 50% width) using `display-buffer-alist'.
+;; This ensures the user's main window configuration is preserved while still
+;; providing access to the diff for review. This works for both interactive
+;; and MCP tool usage of todo-advance.
 
 ;;; Code:
 
@@ -45,13 +53,24 @@ EVENT is the workflow event context."
 (defun org-roam-todo-wf-local--open-magit-review (event)
   "Open magit diff to review changes against target branch.
 Shows the diff between the rebase target (e.g., main) and the feature branch.
+The diff is displayed in a side window to avoid interrupting the user's workflow.
 Reads properties fresh from file."
   (let* ((workflow (org-roam-todo-event-workflow event))
          (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
          (target (org-roam-todo-wf--get-target-branch-from-event event workflow)))
     (when (and worktree-path branch target)
-      (let ((default-directory worktree-path))
+      (let ((default-directory worktree-path)
+            ;; Configure display-buffer to show magit buffers in a side window
+            ;; This prevents magit from taking over the user's main window
+            (display-buffer-alist
+             (cons '("^\\*magit.*"
+                     (display-buffer-in-side-window)
+                     (side . right)
+                     (slot . 0)
+                     (window-width . 0.5)
+                     (preserve-size . (t . nil)))
+                   display-buffer-alist)))
         ;; Open magit diff showing target..branch
         (when (fboundp 'magit-diff-range)
           (magit-diff-range (format "%s..%s" target branch)))))))
