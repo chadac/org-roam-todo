@@ -472,7 +472,7 @@
         (org-roam-todo-wf--only-ai event)
       (user-error
        (should (string-match-p "automated" (cadr err)))
-       (should (string-match-p "human" (cadr err)))))))
+       (should (string-match-p "manually" (cadr err)))))))
 
 (ert-deftest wf-test-only-human-nil-actor-treated-as-human ()
   "Test that nil actor is treated as human (default)."

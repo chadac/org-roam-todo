@@ -418,11 +418,59 @@ Reads WORKTREE_PATH fresh from file."
                      (status (magit-forge-ci--compute-overall-status checks)))
                 (pcase status
                   ("success" nil)  ; pass - CI succeeded
-                  ("pending" (list :pending "CI checks are still running"))
-                  ("failure" (list :fail "CI checks have failed"))
-                  (_ (list :fail (format "CI status unknown: %s" status)))))
+                  ("pending" (list :pending "CI checks are still running.
+
+The workflow will automatically advance when CI completes.
+You can also check CI status manually:
+  - Bash: gh pr checks
+  - Web: Check the PR page on GitHub/GitLab"))
+                  ("failure" (list :fail (format "CI checks have failed.
+
+HOW TO FIX:
+1. Check which CI jobs failed:
+   - Bash: gh pr checks
+   - Bash: gh run list --branch <branch>
+   - Web: Check the PR page for failed checks
+
+2. View CI logs:
+   - Bash: gh run view <run-id> --log-failed
+   - Web: Click on the failed check in the PR
+
+3. Fix the failing tests/checks in your code
+
+4. Commit and push your fixes:
+   - MCP: mcp__emacs__git_stage, mcp__emacs__git_commit
+   - Bash: git add . && git commit -m \"fix: CI failures\"
+   - Bash: git push
+
+5. The workflow will re-check CI automatically, or regress to 'active':
+   - MCP: mcp__emacs__todo_regress to go back and fix issues")))
+                  (_ (list :fail (format "CI status unknown: %s
+
+HOW TO FIX:
+1. Check CI status manually:
+   - Bash: gh pr checks
+   - Web: Check the PR page on GitHub/GitLab
+
+2. If CI hasn't started, it may need a push or manual trigger:
+   - Bash: git commit --allow-empty -m \"trigger CI\" && git push
+
+3. Ensure CI is configured for this repository:
+   - Check .github/workflows/ or .gitlab-ci.yml" status)))))
             ;; No PR yet - can't check CI
-            (list :fail "No PR found - cannot check CI status")))
+            (list :fail "No PR found - cannot check CI status.
+
+HOW TO FIX:
+1. Ensure a PR was created:
+   - Bash: gh pr list --head <branch-name>
+   - Bash: gh pr view
+
+2. If no PR exists, create one:
+   - Bash: gh pr create --draft --title \"<title>\"
+
+3. If the PR exists but forge doesn't see it:
+   - Run: M-x forge-pull
+   - Or: (forge-pull) in Emacs")))
       ;; magit-forge-ci not available - always pass
       nil)))
 
@@ -438,9 +486,62 @@ Reads WORKTREE_PATH fresh from file."
          (state (when worktree-path (org-roam-todo-wf-pr--get-pr-state worktree-path))))
     (pcase state
       (`merged nil)  ; validation passes
-      (`rejected (user-error "PR was closed without merging"))
-      (`open (user-error "PR is still open.  Wait for it to be merged"))
-      (_ (user-error "Could not determine PR state.  Is the PR tracked by forge?")))))
+      (`rejected (user-error "PR was closed without merging.
+
+The pull request was closed by a reviewer or maintainer without being merged.
+
+HOW TO FIX:
+1. Check why the PR was closed:
+   - Bash: gh pr view
+   - Web: Check the PR comments/history
+
+2. If the work is still needed:
+   - MCP: mcp__emacs__todo_regress to go back to 'active'
+   - Address the feedback
+   - Create a new PR or reopen the existing one
+
+3. If the work is no longer needed:
+   - MCP: mcp__emacs__todo_reject with reason explaining why"))
+      (`open (user-error "PR is still open and awaiting merge.
+
+The pull request has not been merged yet.
+
+WHAT TO DO:
+1. Wait for reviewers to approve and merge the PR
+   - The workflow will automatically advance when the PR is merged
+   - MCP: mcp__emacs__todo_watch_status to monitor
+
+2. If you have merge permissions:
+   - Bash: gh pr merge --auto
+   - Web: Click 'Merge pull request' on the PR page
+
+3. If reviews are needed:
+   - Check review status: gh pr checks
+   - Request reviews: gh pr edit --add-reviewer <username>
+
+4. If there are merge conflicts:
+   - MCP: mcp__emacs__todo_regress to go back and rebase
+   - Bash: git fetch && git rebase origin/main
+   - Push and the PR will update"))
+      (_ (user-error "Could not determine PR state.
+
+The forge package cannot find or read the PR status.
+
+HOW TO FIX:
+1. Ensure the PR exists:
+   - Bash: gh pr view
+   - Bash: gh pr list --head <branch-name>
+
+2. Refresh forge data:
+   - Run: M-x forge-pull
+   - Bash: (forge-pull) in Emacs
+
+3. Ensure the repository is tracked by forge:
+   - Run: M-x forge-add-repository
+
+4. Check forge configuration:
+   - Ensure GitHub/GitLab token is configured
+   - See forge documentation for auth setup")))))
 
 (defun org-roam-todo-wf-pr--request-reviewers (event)
   "Request reviewers for the PR.

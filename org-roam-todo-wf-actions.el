@@ -185,7 +185,20 @@ Reads properties fresh from file via `org-roam-todo-prop'."
       (let ((result (org-roam-todo-wf--git-run
                      project-root "rev-parse" "--verify" target)))
         (unless (= 0 (car result))
-          (user-error "Rebase target '%s' does not exist.  Fetch or correct the target branch"
+          (user-error "Rebase target '%s' does not exist.
+
+HOW TO FIX:
+1. If this is a remote branch, fetch it first:
+   - Bash: git fetch origin
+   - MCP: mcp__emacs__git_status to check remotes
+
+2. If the target branch name is wrong, update the workflow config:
+   - Check :rebase-target in workflow definition
+   - Or set TARGET_BRANCH property in the TODO file
+
+3. If using a local branch, ensure it exists:
+   - Bash: git branch -a  (to list all branches)
+   - Then create it if needed: git branch <name>"
                       target))))))
 
 (defun org-roam-todo-wf--require-clean-worktree (event)
@@ -196,7 +209,24 @@ Reads WORKTREE_PATH fresh from file."
     (when worktree-path
       (let ((result (org-roam-todo-wf--git-run worktree-path "status" "--porcelain")))
         (unless (string-empty-p (cdr result))
-          (user-error "Worktree has uncommitted changes.  Commit or stash before proceeding"))))))
+          (user-error "Worktree has uncommitted changes.
+
+UNCOMMITTED CHANGES:
+%s
+
+HOW TO FIX:
+1. Commit your changes:
+   - MCP: mcp__emacs__git_stage with files array, then mcp__emacs__git_commit
+   - Bash: git add <files> && git commit -m \"message\"
+
+2. Or stash changes temporarily:
+   - MCP: mcp__emacs__git_stash_push
+   - Bash: git stash push -m \"WIP\"
+
+3. Or discard changes (CAUTION - loses work):
+   - Bash: git checkout -- <file>  (discard specific file)
+   - Bash: git reset --hard HEAD   (discard ALL changes)"
+                      (string-trim (cdr result))))))))
 
 (defun org-roam-todo-wf--require-staged-changes (event)
   "Validate: there are staged changes to commit.
@@ -205,7 +235,18 @@ Reads WORKTREE_PATH fresh from file."
   (let ((worktree-path (org-roam-todo-prop event "WORKTREE_PATH")))
     (when worktree-path
       (unless (org-roam-todo-wf--has-staged-changes-p worktree-path)
-        (user-error "No staged changes.  Stage your changes before submitting")))))
+        (user-error "No staged changes to commit.
+
+HOW TO FIX:
+1. Stage your changes:
+   - MCP: mcp__emacs__git_stage with files: [\"file1.el\", \"file2.el\"]
+   - Bash: git add <files>
+   - Bash: git add -A  (stage all changes)
+
+2. Check what's available to stage:
+   - MCP: mcp__emacs__git_status to see modified files
+   - MCP: mcp__emacs__git_diff to see unstaged changes
+   - Bash: git status")))))
 
 (defun org-roam-todo-wf--require-branch-has-commits (event)
   "Validate: the feature branch has commits ahead of the target.
@@ -221,7 +262,24 @@ This validates that work has been done and committed on the branch."
         (when (or (not (car result))
                   (string-empty-p (string-trim (cdr result)))
                   (= 0 (string-to-number (string-trim (cdr result)))))
-          (user-error "No commits on branch.  Make and commit changes before advancing"))))))
+          (user-error "No commits on branch ahead of '%s'.
+
+This means your feature branch has no new commits compared to the target.
+
+HOW TO FIX:
+1. Make sure you have changes to commit:
+   - MCP: mcp__emacs__git_status to check for uncommitted changes
+   - MCP: mcp__emacs__git_diff to review changes
+
+2. Stage and commit your changes:
+   - MCP: mcp__emacs__git_stage with files array
+   - MCP: mcp__emacs__git_commit with commit message
+   - Bash: git add <files> && git commit -m \"message\"
+
+3. Verify commits exist:
+   - MCP: mcp__emacs__git_log to see recent commits
+   - Bash: git log --oneline %s..HEAD"
+                  target target))))))
 
 (defun org-roam-todo-wf--require-rebase-clean (event)
   "Validate: branch rebases cleanly onto target.
@@ -237,7 +295,31 @@ Reads properties fresh from file."
       (let ((result (org-roam-todo-wf--git-run worktree-path "rebase" target)))
         (unless (= 0 (car result))
           (org-roam-todo-wf--git-run worktree-path "rebase" "--abort")
-          (user-error "Rebase conflict with %s.  Resolve manually before proceeding" target))))))
+          (user-error "Rebase onto '%s' has conflicts that must be resolved manually.
+
+The validation attempted a rebase but encountered conflicts.
+The rebase has been automatically aborted to preserve your work.
+
+HOW TO FIX:
+1. Start the rebase manually:
+   - Bash: cd %s && git rebase %s
+
+2. For each conflict:
+   - Edit conflicting files to resolve conflicts
+   - MCP: mcp__emacs__git_stage to stage resolved files
+   - Bash: git add <resolved-file>
+   - Continue: git rebase --continue
+
+3. If you need to abort:
+   - Bash: git rebase --abort
+
+4. Alternative - merge instead (if workflow allows):
+   - Bash: git merge %s
+   - Resolve conflicts, then commit
+
+CONFLICT OUTPUT:
+%s"
+                      target worktree-path target target (cdr result)))))))
 
 (defun org-roam-todo-wf--require-pre-commit-pass (event)
   "Validate: git pre-commit hook passes on staged changes.
@@ -253,7 +335,28 @@ Reads WORKTREE_PATH fresh from file."
                (file-executable-p hook-path))
       (let ((default-directory worktree-path))
         (unless (= 0 (call-process hook-path nil nil nil))
-          (user-error "Pre-commit hook failed.  Fix issues before proceeding"))))))
+          (user-error "Pre-commit hook failed.
+
+The pre-commit hook at %s returned a non-zero exit code.
+This usually means code quality checks (linting, formatting, tests) failed.
+
+HOW TO FIX:
+1. Run the hook manually to see detailed output:
+   - Bash: cd %s && .git/hooks/pre-commit
+
+2. Common pre-commit issues:
+   - Linting errors: fix code style issues
+   - Formatting: run your formatter (e.g., prettier, black, gofmt)
+   - Type errors: fix type annotations
+   - Test failures: fix failing tests
+
+3. If using pre-commit framework:
+   - Bash: pre-commit run --all-files  (to see all issues)
+   - Bash: pre-commit run <hook-id>    (run specific hook)
+
+4. Skip hooks temporarily (NOT RECOMMENDED):
+   - Bash: git commit --no-verify"
+                      hook-path worktree-path))))))
 
 (defun org-roam-todo-wf--require-target-clean (event)
   "Validate: target branch repo has no uncommitted changes.
@@ -266,7 +369,29 @@ Reads PROJECT_ROOT fresh from file."
       ;; Use -uno to ignore untracked files
       (let ((result (org-roam-todo-wf--git-run project-root "status" "--porcelain" "-uno")))
         (unless (string-empty-p (string-trim (cdr result)))
-          (user-error "Target repository has uncommitted changes.  Clean up before merging"))))))
+          (user-error "Target repository at '%s' has uncommitted changes.
+
+The main project repository must be clean before merging.
+This is separate from your worktree - it's the main project directory.
+
+UNCOMMITTED CHANGES:
+%s
+
+HOW TO FIX:
+1. Go to the main project and commit or stash changes:
+   - Bash: cd %s
+   - Then: git stash push -m \"WIP before merge\"
+   - Or: git add . && git commit -m \"WIP\"
+
+2. Or discard changes in main project (CAUTION):
+   - Bash: cd %s && git reset --hard HEAD
+
+NOTE: This validation exists because fast-forward merges require
+a clean working directory in the target repository."
+                      project-root
+                      (string-trim (cdr result))
+                      project-root
+                      project-root))))))
 
 (defun org-roam-todo-wf--require-ff-possible (event)
   "Validate: fast-forward merge to target branch is possible.
@@ -285,8 +410,29 @@ Reads properties fresh from file."
       (let ((result (org-roam-todo-wf--git-run
                      project-root "merge-base" "--is-ancestor" target branch-name)))
         (unless (= 0 (car result))
-          (user-error "Cannot fast-forward: %s has diverged from %s.  Rebase first"
-                      target branch-name))))))
+          (user-error "Cannot fast-forward merge: '%s' has commits not in '%s'.
+
+This means the target branch has new commits since you branched off.
+Your branch needs to be rebased onto the latest target.
+
+HOW TO FIX:
+1. Rebase your branch onto the target:
+   - Bash: cd <worktree> && git fetch && git rebase %s
+   - MCP: The workflow will attempt this automatically on status change
+
+2. If rebase has conflicts, resolve them:
+   - Edit conflicting files
+   - Bash: git add <resolved-files>
+   - Bash: git rebase --continue
+
+3. After successful rebase, try advancing again:
+   - MCP: mcp__emacs__todo_advance
+
+TECHNICAL DETAILS:
+- Target branch: %s
+- Feature branch: %s
+- The target must be an ancestor of your branch for ff-merge"
+                      target branch-name target target branch-name))))))
 
 (defun org-roam-todo-wf--require-acceptance-complete (event)
   "Validate: all acceptance criteria must be complete.
@@ -295,14 +441,31 @@ Uses `org-roam-todo-all-criteria-complete-p' to check the TODO file."
   (let ((file (org-roam-todo--resolve-file event)))
     (unless (org-roam-todo-all-criteria-complete-p file)
       (let ((incomplete (org-roam-todo-get-incomplete-criteria file)))
-        (user-error "Incomplete acceptance criteria (%d remaining):\n%s"
+        (user-error "Incomplete acceptance criteria - %d remaining:
+
+%s
+
+HOW TO FIX:
+1. Complete the remaining acceptance criteria in your implementation
+
+2. Mark criteria as complete in the TODO file:
+   - Change '- [ ]' to '- [X]' for each completed item
+   - MCP: Use mcp__emacs__lock_file and mcp__emacs__edit to update the TODO
+   - Or edit the TODO file directly
+
+3. If a criterion is no longer applicable:
+   - Remove it from the TODO file
+   - Or mark it as N/A: '- [X] N/A - <reason>'
+
+TODO FILE: %s"
                     (length incomplete)
                     (mapconcat (lambda (c)
-                                 (format "  %d. %s"
+                                 (format "  %d. [ ] %s"
                                          (plist-get c :index)
                                          (plist-get c :text)))
                                incomplete
-                               "\n"))))))
+                               "\n")
+                    file)))))
 
 (defun org-roam-todo-wf--require-user-approval (event)
   "Validate: user has approved the changes.
