@@ -1251,5 +1251,189 @@ the user-approval validation."
     (should validate-ci-hooks)
     (should (member 'org-roam-todo-wf-pr--require-pr-sections validate-ci-hooks))))
 
+;;; ============================================================
+;;; PR Info Detection Tests (gh CLI fallback)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-get-pr-number-from-props ()
+  "Test get-pr-number-from-props reads PR_NUMBER from TODO properties."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((event (make-org-roam-todo-event
+                :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output "123"))))
+      (should (string= "123" (org-roam-todo-wf-pr--get-pr-number-from-props event))))))
+
+(ert-deftest wf-pr-test-get-pr-number-from-props-nil ()
+  "Test get-pr-number-from-props returns nil when PR_NUMBER not set."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((event (make-org-roam-todo-event
+                :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output nil))))
+      (should-not (org-roam-todo-wf-pr--get-pr-number-from-props event)))))
+
+(ert-deftest wf-pr-test-get-pr-info-uses-forge-first ()
+  "Test get-pr-info uses forge when PR is known to forge."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org")))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :number 42)))
+    (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+    (unwind-protect
+        (mocker-let
+            ((org-roam-todo-wf-pr--get-pullreq (path)
+               ((:input '("/tmp/test-repo") :output mock-pullreq)))
+             (org-roam-todo-wf-pr--get-forge-repo (path)
+               ((:input '("/tmp/test-repo") :output mock-repo))))
+          (let ((pr-info (org-roam-todo-wf-pr--get-pr-info event "/tmp/test-repo")))
+            (should pr-info)
+            (should (eq 'forge (plist-get pr-info :source)))
+            (should (= 42 (plist-get pr-info :pr-number)))
+            (should (string= "test-owner" (plist-get pr-info :owner)))
+            (should (string= "test-repo" (plist-get pr-info :name)))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
+
+(ert-deftest wf-pr-test-get-pr-info-falls-back-to-properties ()
+  "Test get-pr-info falls back to TODO properties when forge doesn't know PR."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-wf-pr--get-pullreq (path)
+           ((:input '("/tmp/test-repo") :output nil)))
+         (org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output "99")))
+         (org-roam-todo-wf-pr--get-repo-info-via-gh (path)
+           ((:input '("/tmp/test-repo") :output '("my-owner" . "my-repo")))))
+      (let ((pr-info (org-roam-todo-wf-pr--get-pr-info event "/tmp/test-repo")))
+        (should pr-info)
+        (should (eq 'property (plist-get pr-info :source)))
+        (should (= 99 (plist-get pr-info :pr-number)))
+        (should (string= "my-owner" (plist-get pr-info :owner)))
+        (should (string= "my-repo" (plist-get pr-info :name)))))))
+
+(ert-deftest wf-pr-test-get-pr-info-falls-back-to-gh-cli ()
+  "Test get-pr-info falls back to gh CLI when forge and properties unavailable."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-wf-pr--get-pullreq (path)
+           ((:input '("/tmp/test-repo") :output nil)))
+         (org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+             :output "feature/my-branch")))
+         (org-roam-todo-wf-pr--get-pr-number-via-gh (path branch)
+           ((:input '("/tmp/test-repo" "feature/my-branch") :output "77")))
+         (org-roam-todo-wf-pr--get-repo-info-via-gh (path)
+           ((:input '("/tmp/test-repo") :output '("gh-owner" . "gh-repo")))))
+      (let ((pr-info (org-roam-todo-wf-pr--get-pr-info event "/tmp/test-repo")))
+        (should pr-info)
+        (should (eq 'gh-cli (plist-get pr-info :source)))
+        (should (= 77 (plist-get pr-info :pr-number)))
+        (should (string= "gh-owner" (plist-get pr-info :owner)))
+        (should (string= "gh-repo" (plist-get pr-info :name)))))))
+
+(ert-deftest wf-pr-test-get-pr-info-returns-nil-when-no-pr ()
+  "Test get-pr-info returns nil when no PR can be found."
+  :tags '(:unit :wf :pr :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-wf-pr--get-pullreq (path)
+           ((:input '("/tmp/test-repo") :output nil)))
+         (org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+             :output "feature/my-branch")))
+         (org-roam-todo-wf-pr--get-pr-number-via-gh (path branch)
+           ((:input '("/tmp/test-repo" "feature/my-branch") :output nil))))
+      (should-not (org-roam-todo-wf-pr--get-pr-info event "/tmp/test-repo")))))
+
+(ert-deftest wf-pr-test-require-ci-pass-uses-pr-info-fallback ()
+  "Test require-ci-pass uses get-pr-info for PR detection."
+  :tags '(:unit :wf :pr :validation :ci :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  ;; Test that require-ci-pass uses the new get-pr-info which falls back
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (featurep (feature)
+           ((:input '(magit-forge-ci) :output t)))
+         (fboundp (sym)
+           ((:input-matcher (lambda (s) t) :output t :min-occur 0 :max-occur nil)))
+         ;; Return PR info via property fallback
+         (org-roam-todo-wf-pr--get-pr-info (event path)
+           ((:input-matcher (lambda (e p) (string= p "/tmp/test-repo"))
+             :output '(:pr-number 123 :owner "test-owner" :name "test-repo" :source property))))
+         (magit-forge-ci--get-checks-via-gh-cli (owner name pr-number)
+           ((:input '("test-owner" "test-repo" 123)
+             :output '(((state . "success"))))))
+         (magit-forge-ci--compute-overall-status (checks)
+           ((:input-matcher (lambda (&rest _) t) :output "success"))))
+      ;; Should pass when using property-based PR detection
+      (should-not (org-roam-todo-wf-pr--require-ci-pass event)))))
+
+(ert-deftest wf-pr-test-require-ci-pass-fails-when-no-pr-found ()
+  "Test require-ci-pass returns :fail when no PR can be found via any method."
+  :tags '(:unit :wf :pr :validation :ci :detection)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test-todo.org"))))
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+             :output "/tmp/test-repo")))
+         (featurep (feature)
+           ((:input '(magit-forge-ci) :output t)))
+         (fboundp (sym)
+           ((:input-matcher (lambda (s) t) :output t :min-occur 0 :max-occur nil)))
+         ;; No PR found via any method
+         (org-roam-todo-wf-pr--get-pr-info (event path)
+           ((:input-matcher (lambda (e p) (string= p "/tmp/test-repo"))
+             :output nil))))
+      (let ((result (org-roam-todo-wf-pr--require-ci-pass event)))
+        (should (listp result))
+        (should (eq (car result) :fail))
+        ;; Error message should mention all methods tried
+        (should (string-match-p "forge" (cadr result)))
+        (should (string-match-p "properties" (cadr result)))
+        (should (string-match-p "gh CLI" (cadr result)))))))
+
 (provide 'org-roam-todo-wf-pr-test)
 ;;; org-roam-todo-wf-pr-test.el ends here

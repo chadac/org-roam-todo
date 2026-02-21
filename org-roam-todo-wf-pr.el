@@ -215,6 +215,91 @@ Falls back to database lookup if git config is not set (for externally-created P
                      (equal (oref pr head-ref) branch))
                    (oref repo pullreqs))))))
 
+;;; ------------------------------------------------------------
+;;; PR Info via gh CLI (fallback when forge doesn't know about PR)
+;;; ------------------------------------------------------------
+
+(defun org-roam-todo-wf-pr--get-pr-number-from-props (event)
+  "Get PR number from TODO properties.
+Reads :PR_NUMBER: property from the TODO file.
+Returns the PR number as a string, or nil if not set."
+  (org-roam-todo-prop event "PR_NUMBER"))
+
+(defun org-roam-todo-wf-pr--get-pr-number-via-gh (worktree-path branch)
+  "Get PR number for BRANCH using gh CLI.
+WORKTREE-PATH is the directory to run the command in.
+BRANCH is the head branch name to search for.
+Returns the PR number as a string, or nil if no PR found."
+  (when (and worktree-path branch)
+    (let* ((default-directory worktree-path)
+           (output (string-trim
+                    (shell-command-to-string
+                     (format "gh pr list --head %s --json number -q '.[0].number' 2>/dev/null"
+                             (shell-quote-argument branch))))))
+      (when (and output
+                 (not (string-empty-p output))
+                 (string-match-p "^[0-9]+$" output))
+        output))))
+
+(defun org-roam-todo-wf-pr--get-repo-info-via-gh (worktree-path)
+  "Get repository owner and name using gh CLI.
+WORKTREE-PATH is the directory to run the command in.
+Returns a cons cell (owner . name), or nil if not available."
+  (when worktree-path
+    (let* ((default-directory worktree-path)
+           (owner (string-trim
+                   (shell-command-to-string
+                    "gh repo view --json owner -q .owner.login 2>/dev/null")))
+           (name (string-trim
+                  (shell-command-to-string
+                   "gh repo view --json name -q .name 2>/dev/null"))))
+      (when (and owner name
+                 (not (string-empty-p owner))
+                 (not (string-empty-p name)))
+        (cons owner name)))))
+
+(defun org-roam-todo-wf-pr--get-pr-info (event worktree-path)
+  "Get PR info for the TODO, using multiple fallback strategies.
+EVENT is the workflow event context.
+WORKTREE-PATH is the directory containing the worktree.
+
+Tries in order:
+1. Forge pullreq object (if forge knows about the PR)
+2. TODO :PR_NUMBER: property (if manually set)
+3. gh CLI lookup by branch name
+
+Returns a plist (:pr-number N :owner \"owner\" :name \"repo\" :source SOURCE)
+where SOURCE is \\='forge, \\='property, or \\='gh-cli.
+Returns nil if no PR can be found."
+  (let ((default-directory worktree-path))
+    ;; Strategy 1: Try forge first (fastest if available)
+    (if-let ((pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
+        (let ((repo (org-roam-todo-wf-pr--get-forge-repo worktree-path)))
+          (list :pr-number (org-roam-todo-wf-pr--slot pullreq 'number)
+                :owner (org-roam-todo-wf-pr--slot repo 'owner)
+                :name (org-roam-todo-wf-pr--slot repo 'name)
+                :source 'forge))
+      ;; Strategy 2: Check TODO properties
+      (if-let ((pr-number-str (org-roam-todo-wf-pr--get-pr-number-from-props event)))
+          (let* ((pr-number (string-to-number pr-number-str))
+                 (repo-info (org-roam-todo-wf-pr--get-repo-info-via-gh worktree-path)))
+            (when (and (> pr-number 0) repo-info)
+              (list :pr-number pr-number
+                    :owner (car repo-info)
+                    :name (cdr repo-info)
+                    :source 'property)))
+        ;; Strategy 3: Use gh CLI to find PR by branch name
+        (let ((branch (or (org-roam-todo-prop event "WORKTREE_BRANCH")
+                          (magit-get-current-branch))))
+          (when-let ((pr-number-str (org-roam-todo-wf-pr--get-pr-number-via-gh
+                                     worktree-path branch)))
+            (let ((repo-info (org-roam-todo-wf-pr--get-repo-info-via-gh worktree-path)))
+              (when repo-info
+                (list :pr-number (string-to-number pr-number-str)
+                      :owner (car repo-info)
+                      :name (cdr repo-info)
+                      :source 'gh-cli)))))))))
+
 ;; Target branch functions are in org-roam-todo-wf-actions.el:
 ;; - org-roam-todo-wf--get-target-branch (from plist)
 ;; - org-roam-todo-wf--get-target-branch-from-event (reads fresh from file)
@@ -348,7 +433,8 @@ Returns one of: merged, rejected (closed), open, or nil if no PR exists."
 (defun org-roam-todo-wf-pr--check-ci-status (todo)
   "Check CI status for TODO's PR.
 Returns \\='success, \\='failure, or \\='pending.
-Used by watchers to poll CI status and trigger auto-advancement."
+Used by watchers to poll CI status and trigger auto-advancement.
+Falls back to gh CLI for PR detection when forge doesn't know about the PR."
   (let ((worktree-path (plist-get todo :worktree-path)))
     (if (and worktree-path
              (featurep 'magit-forge-ci)
@@ -356,19 +442,21 @@ Used by watchers to poll CI status and trigger auto-advancement."
              (fboundp 'magit-forge-ci--compute-overall-status))
         (condition-case nil
             (let* ((default-directory worktree-path)
-                   (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
-                   (pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
-              (if pullreq
-                  (let* ((owner (org-roam-todo-wf-pr--slot repo 'owner))
-                         (name (org-roam-todo-wf-pr--slot repo 'name))
-                         (pr-number (org-roam-todo-wf-pr--slot pullreq 'number))
+                   ;; Create a minimal event for get-pr-info
+                   ;; It needs the :file property to read TODO properties
+                   (event (make-org-roam-todo-event :todo todo))
+                   (pr-info (org-roam-todo-wf-pr--get-pr-info event worktree-path)))
+              (if pr-info
+                  (let* ((owner (plist-get pr-info :owner))
+                         (name (plist-get pr-info :name))
+                         (pr-number (plist-get pr-info :pr-number))
                          (checks (magit-forge-ci--get-checks-via-gh-cli owner name pr-number))
                          (status (magit-forge-ci--compute-overall-status checks)))
                     (pcase status
                       ("success" 'success)
                       ("failure" 'failure)
                       (_ 'pending)))
-                ;; No PR yet - still pending
+                ;; No PR found via any method - still pending
                 'pending))
           (error 'pending))
       ;; No CI integration available - assume pending (manual check needed)
@@ -398,6 +486,7 @@ Returns:
   (:fail \"message\") - CI checks failed or PR not found
 
 Uses `magit-forge-ci' if available to check CI status.
+Falls back to gh CLI for PR detection when forge doesn't know about the PR.
 Otherwise, always passes (user must verify CI manually).
 Reads WORKTREE_PATH fresh from file."
   (let ((worktree-path (org-roam-todo-prop event "WORKTREE_PATH")))
@@ -407,13 +496,13 @@ Reads WORKTREE_PATH fresh from file."
              (fboundp 'magit-forge-ci--get-checks-via-gh-cli)
              (fboundp 'magit-forge-ci--compute-overall-status))
         ;; Use magit-forge-ci to check CI status
+        ;; Use the new get-pr-info which falls back to gh CLI
         (let* ((default-directory worktree-path)
-               (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
-               (pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
-          (if pullreq
-              (let* ((owner (org-roam-todo-wf-pr--slot repo 'owner))
-                     (name (org-roam-todo-wf-pr--slot repo 'name))
-                     (pr-number (org-roam-todo-wf-pr--slot pullreq 'number))
+               (pr-info (org-roam-todo-wf-pr--get-pr-info event worktree-path)))
+          (if pr-info
+              (let* ((owner (plist-get pr-info :owner))
+                     (name (plist-get pr-info :name))
+                     (pr-number (plist-get pr-info :pr-number))
                      (checks (magit-forge-ci--get-checks-via-gh-cli owner name pr-number))
                      (status (magit-forge-ci--compute-overall-status checks)))
                 (pcase status
@@ -457,8 +546,10 @@ HOW TO FIX:
 
 3. Ensure CI is configured for this repository:
    - Check .github/workflows/ or .gitlab-ci.yml" status)))))
-            ;; No PR yet - can't check CI
+            ;; No PR found via any method (tried forge, TODO properties, and gh CLI)
             (list :fail "No PR found - cannot check CI status.
+
+Tried: forge, TODO :PR_NUMBER: property, and gh CLI lookup by branch.
 
 HOW TO FIX:
 1. Ensure a PR was created:
@@ -468,9 +559,9 @@ HOW TO FIX:
 2. If no PR exists, create one:
    - Bash: gh pr create --draft --title \"<title>\"
 
-3. If the PR exists but forge doesn't see it:
-   - Run: M-x forge-pull
-   - Or: (forge-pull) in Emacs")))
+3. If the PR exists but wasn't detected:
+   - Add :PR_NUMBER: property to your TODO file
+   - Or run: M-x forge-pull to sync forge database")))
       ;; magit-forge-ci not available - always pass
       nil)))
 
