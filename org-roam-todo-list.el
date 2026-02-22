@@ -232,7 +232,10 @@ Shows ✓ if worktree exists, ✗ if not (only for non-draft TODOs)."
 
 (defun org-roam-todo-list--get-agent-status (worktree-path)
   "Get agent status info for WORKTREE-PATH.
-Returns a status symbol: `ready', `thinking', `waiting', or nil if no agent.
+Returns a status symbol: `ready', `thinking', `waiting', `waiting-user',
+or nil if no agent.
+- `waiting' means waiting for permission approval
+- `waiting-user' means agent called todo-wait-for-user
 Uses the same logic as `claude-sessions--get-session-status'."
   (let ((expanded-path (file-name-as-directory (expand-file-name worktree-path))))
     (cl-loop for buffer in (buffer-list)
@@ -250,6 +253,10 @@ Uses the same logic as `claude-sessions--get-session-status'."
                                    claude-agent--process
                                    (process-live-p claude-agent--process)))
                          nil)  ; Dead/no process = no agent
+                        ;; Waiting for user input (via todo-wait-for-user)
+                        ((and (boundp 'org-roam-todo-wf-tools--agent-waiting)
+                              org-roam-todo-wf-tools--agent-waiting)
+                         'waiting-user)
                         ;; Waiting for permission
                         ((and (boundp 'claude-agent--permission-data)
                               claude-agent--permission-data)
@@ -265,9 +272,15 @@ Uses the same logic as `claude-sessions--get-session-status'."
                         ;; Ready
                         (t 'ready)))))))))
 
+(defface org-roam-todo-list-agent-waiting-user
+  '((((class color) (background dark)) :foreground "#e5c07b" :weight bold)
+    (((class color) (background light)) :foreground "#b08000" :weight bold))
+  "Face for agent waiting for user input status."
+  :group 'org-roam-todo-list)
+
 (defun org-roam-todo-list--format-agent (todo)
   "Format agent status indicator for TODO.
-Shows status matching `*claude-sessions*': ready, thinking, waiting."
+Shows status matching `*claude-sessions*': ready, thinking, waiting, waiting-user."
   (let* ((worktree-path (plist-get todo :worktree-path))
          (status (and worktree-path
                       (org-roam-todo-list--get-agent-status worktree-path)))
@@ -275,11 +288,13 @@ Shows status matching `*claude-sessions*': ready, thinking, waiting."
                       ('ready "ready")
                       ('thinking "thinking")
                       ('waiting "waiting")
+                      ('waiting-user "needs you")
                       (_ "")))
          (face (pcase status
                  ('ready 'claude-sessions-status-ready)
                  ('thinking 'claude-sessions-status-thinking)
                  ('waiting 'claude-sessions-status-waiting)
+                 ('waiting-user 'org-roam-todo-list-agent-waiting-user)
                  (_ 'default))))
     (propertize (org-roam-todo-list--pad indicator
                                           (org-roam-todo-list--get-width 'agent))

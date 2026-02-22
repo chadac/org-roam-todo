@@ -301,6 +301,12 @@ Returns (indicator . face) cons."
      (should-have-wt (cons "✗ Missing" 'org-roam-todo-status-worktree-missing))
      (t (cons "—" 'font-lock-comment-face)))))
 
+(defface org-roam-todo-status-agent-needs-input
+  '((((class color) (background dark)) :foreground "#e5c07b" :weight bold)
+    (((class color) (background light)) :foreground "#b08000" :weight bold))
+  "Face for agent needing user input status."
+  :group 'org-roam-todo-status)
+
 (defun org-roam-todo-status--get-agent-status (todo)
   "Get agent status for TODO.
 Returns (indicator . face) cons."
@@ -311,6 +317,7 @@ Returns (indicator . face) cons."
       ('ready (cons "Ready" 'org-roam-todo-status-agent-ready))
       ('thinking (cons "Thinking" 'org-roam-todo-status-agent-thinking))
       ('waiting (cons "Waiting" 'org-roam-todo-status-agent-waiting))
+      ('waiting-user (cons "Needs Input" 'org-roam-todo-status-agent-needs-input))
       (_ (cons "—" 'font-lock-comment-face)))))
 
 (defun org-roam-todo-status--insert-header (todo workflow)
@@ -451,6 +458,31 @@ the user hasn't already approved (APPROVED property is not set)."
     (insert (org-roam-todo-status--propertize "Reject" 'font-lock-comment-face))
     (insert "\n")))
 
+(defun org-roam-todo-status--get-agent-waiting-reason (todo)
+  "Get the reason the agent is waiting for user input, if any.
+Returns nil if agent is not waiting for user."
+  (let* ((worktree-path (plist-get todo :worktree-path)))
+    (when worktree-path
+      (require 'org-roam-todo-wf-tools nil t)
+      (when (fboundp 'org-roam-todo-wf-tools--get-agent-waiting-state)
+        (let ((waiting-state (org-roam-todo-wf-tools--get-agent-waiting-state worktree-path)))
+          (plist-get waiting-state :reason))))))
+
+(defun org-roam-todo-status--insert-agent-waiting-notice (todo)
+  "Insert notice if agent is waiting for user input."
+  (when-let ((reason (org-roam-todo-status--get-agent-waiting-reason todo)))
+    (insert "\n")
+    (insert (org-roam-todo-status--propertize "⚠ Agent Needs Your Input" 
+                                               '(:foreground "#e5c07b" :weight bold)))
+    (insert "\n")
+    (insert (org-roam-todo-status--propertize 
+             (format "  %s\n" reason)
+             'font-lock-comment-face))
+    (insert "  ")
+    (insert (org-roam-todo-status--propertize "Switch to agent buffer to respond"
+                                               'font-lock-comment-face))
+    (insert "\n")))
+
 (defun org-roam-todo-status--insert-sections ()
   "Insert all sections into the buffer."
   (let* ((todo org-roam-todo-status--todo)
@@ -459,6 +491,8 @@ the user hasn't already approved (APPROVED property is not set)."
       (org-roam-todo-status--insert-header todo workflow)
       (insert "\n")
       (org-roam-todo-status--insert-validations todo workflow)
+      ;; Show agent waiting notice if applicable
+      (org-roam-todo-status--insert-agent-waiting-notice todo)
       ;; Show review notice if applicable
       (org-roam-todo-status--insert-review-notice todo)
       (insert "\n")

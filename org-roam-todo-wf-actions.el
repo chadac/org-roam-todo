@@ -503,7 +503,8 @@ HOW TO FIX:
 Uses the rule-based permission system to:
 - Auto-allow Read for both worktree and project root (safe read-only access)
 - Auto-allow Edit/Write/lock/locks/edit/edits for the worktree
-- Auto-deny Edit/Write/lock/locks/edit/edits for the project root"
+- Auto-deny Edit/Write/lock/locks/edit/edits for the project root
+- Include workflow system prompts for todo-advance and todo-wait-for-user"
   (let* ((dir-locals-file (expand-file-name ".dir-locals.el" worktree-path))
          (worktree-normalized (file-name-as-directory
                                (expand-file-name worktree-path)))
@@ -511,8 +512,8 @@ Uses the rule-based permission system to:
                                    (expand-file-name project-root)))
          (reject-message (format "You are in a worktree. Edit files here (%s), not in the main project."
                                  worktree-path))
-         (system-prompt (format "You are working in a git worktree at %s. Only edit files within this worktree directory. The main project at %s is off-limits for editing."
-                                worktree-path project-root-normalized))
+         (system-prompt (org-roam-todo-wf--generate-agent-system-prompt
+                         worktree-path project-root-normalized))
          ;; Permission rules evaluated in order - first match wins
          (permission-rules
           `(;; Rule 1: Auto-allow Read/read_file for anywhere (safe read-only)
@@ -537,6 +538,41 @@ Uses the rule-based permission system to:
       (insert ";;; Directory Local Variables for worktree agent\n")
       (insert ";;; For more information see (info \"(emacs) Directory Variables\")\n\n")
       (pp dir-locals-content (current-buffer)))))
+
+(defun org-roam-todo-wf--generate-agent-system-prompt (worktree-path project-root)
+  "Generate a comprehensive system prompt for the agent.
+WORKTREE-PATH is where the agent should edit files.
+PROJECT-ROOT is the main project location (off-limits for editing)."
+  (format "You are working in a git worktree at %s.
+
+IMPORTANT FILE EDITING RULES:
+- Only edit files within this worktree directory
+- The main project at %s is off-limits for editing
+- Read access is allowed everywhere
+
+WORKFLOW MANAGEMENT:
+You are working on a TODO task managed by the org-roam-todo workflow system.
+You have access to workflow tools via the MCP Emacs integration:
+
+1. mcp__emacs__todo_advance - Call this when you have COMPLETED the task
+   - Advances the TODO to the next workflow status
+   - Only call when all acceptance criteria are met
+   - The workflow will handle validation, git operations, etc.
+
+2. mcp__emacs__todo_wait_for_user - Call this when you NEED USER INPUT
+   - Use when you need clarification, approval, or decisions
+   - Describe what you're waiting for in the reason parameter
+   - The user will be notified and can respond
+
+3. mcp__emacs__todo_reject - Call this if the task CANNOT be completed
+   - Use when you encounter blockers that prevent completion
+   - Provide a clear reason for the rejection
+
+WORKFLOW EXPECTATIONS:
+- When you finish your work, call todo_advance to move the workflow forward
+- If you're unsure about something, call todo_wait_for_user rather than guessing
+- The system will remind you to advance if you become idle without doing so"
+          worktree-path project-root))
 
 (defun org-roam-todo-wf--ensure-worktree (event)
   "Ensure worktree exists for TODO in EVENT.

@@ -266,6 +266,67 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
 ;;; - a (advance): auto-approves if review is pending
 
 ;;; ============================================================
+;;; Agent State Tracking
+;;; ============================================================
+
+(defvar-local org-roam-todo-wf-tools--agent-waiting nil
+  "When non-nil, the agent is waiting for user input.
+Contains a plist with :reason and :since keys.")
+
+(defvar-local org-roam-todo-wf-tools--todo-file nil
+  "The TODO file associated with this agent buffer.")
+
+(defun org-roam-todo-wf-tools--get-agent-waiting-state (worktree-path)
+  "Get the waiting state for the agent in WORKTREE-PATH.
+Returns nil if no agent or not waiting, otherwise the waiting plist."
+  (let ((expanded-path (file-name-as-directory (expand-file-name worktree-path))))
+    (cl-loop for buffer in (buffer-list)
+             for name = (buffer-name buffer)
+             when (string-match-p "^\\*claude:" name)
+             do (with-current-buffer buffer
+                  (let ((buf-dir (file-name-as-directory
+                                  (expand-file-name default-directory))))
+                    (when (string= buf-dir expanded-path)
+                      (cl-return org-roam-todo-wf-tools--agent-waiting)))))))
+
+;;; ============================================================
+;;; Agent Wait-for-User Tool
+;;; ============================================================
+
+(defun org-roam-todo-wf-tools-wait-for-user (reason)
+  "Signal that the agent is waiting for user input.
+REASON explains what the agent is waiting for.
+This sets a waiting state that:
+1. Shows in the TODO status UI
+2. Prevents auto-advance prompts
+3. Notifies the user that input is needed
+
+The waiting state is cleared when:
+- The user sends a message to the agent
+- The agent calls todo-advance or todo-reject
+- The agent explicitly clears it by calling this with empty reason"
+  (if (or (null reason) (string-empty-p reason))
+      ;; Clear waiting state
+      (progn
+        (setq org-roam-todo-wf-tools--agent-waiting nil)
+        "Waiting state cleared. Resuming normal operation.")
+    ;; Set waiting state
+    (setq org-roam-todo-wf-tools--agent-waiting
+          (list :reason reason
+                :since (current-time)))
+    ;; Update TODO property if we know which TODO this is
+    (when org-roam-todo-wf-tools--todo-file
+      (org-roam-todo-wf-tools--set-property 
+       org-roam-todo-wf-tools--todo-file
+       "AGENT_WAITING" reason))
+    ;; Request user attention
+    (when (fboundp 'claude-mcp-request-attention)
+      (claude-mcp-request-attention 
+       (format "Agent waiting: %s" reason)
+       'normal))
+    (format "Waiting for user input: %s\n\nThe user has been notified. You will receive a message when they respond." reason)))
+
+;;; ============================================================
 ;;; Agent Spawning
 ;;; ============================================================
 
@@ -280,36 +341,118 @@ Returns the agent buffer name."
              (buffer-name (buffer-name buf)))
         ;; Store agent buffer reference in TODO
         (org-roam-todo-wf-tools--set-property file "AGENT_BUFFER" buffer-name)
+        ;; Set up agent hooks and state
+        (with-current-buffer buf
+          (setq org-roam-todo-wf-tools--todo-file file)
+          ;; Add hook to clear waiting state when user sends message
+          (add-hook 'claude-agent-before-send-message-hook
+                    #'org-roam-todo-wf-tools--on-user-message nil t)
+          ;; Add hook to prompt for advance when agent becomes ready
+          (add-hook 'claude-agent-ready-hook
+                    #'org-roam-todo-wf-tools--on-agent-ready nil t))
         ;; Send task to agent
         (org-roam-todo-wf-tools--send-task-to-agent buf todo)
         buffer-name)
     (user-error "claude-agent not available - cannot delegate")))
 
+(defun org-roam-todo-wf-tools--on-user-message ()
+  "Hook called when user sends a message to the agent.
+Clears the waiting state since user has responded."
+  (when org-roam-todo-wf-tools--agent-waiting
+    (setq org-roam-todo-wf-tools--agent-waiting nil)
+    ;; Clear the TODO property
+    (when org-roam-todo-wf-tools--todo-file
+      (org-roam-todo-wf-tools--set-property
+       org-roam-todo-wf-tools--todo-file
+       "AGENT_WAITING" ""))))
+
+(defvar org-roam-todo-wf-tools--ready-prompt-delay 2.0
+  "Seconds to wait after agent becomes ready before prompting.
+This avoids prompting during brief pauses in multi-step operations.")
+
+(defvar-local org-roam-todo-wf-tools--ready-timer nil
+  "Timer for delayed ready-state prompting.")
+
+(defun org-roam-todo-wf-tools--on-agent-ready (buffer)
+  "Hook called when agent becomes ready (idle).
+BUFFER is the agent buffer.
+After a delay, prompts the agent to advance the TODO if appropriate."
+  (with-current-buffer buffer
+    ;; Cancel any existing timer
+    (when org-roam-todo-wf-tools--ready-timer
+      (cancel-timer org-roam-todo-wf-tools--ready-timer))
+    ;; Don't prompt if agent is waiting for user
+    (unless org-roam-todo-wf-tools--agent-waiting
+      ;; Set up delayed prompt
+      (setq org-roam-todo-wf-tools--ready-timer
+            (run-with-timer
+             org-roam-todo-wf-tools--ready-prompt-delay nil
+             #'org-roam-todo-wf-tools--maybe-prompt-advance
+             buffer)))))
+
+(defun org-roam-todo-wf-tools--maybe-prompt-advance (buffer)
+  "Prompt agent in BUFFER to consider advancing the TODO.
+Only prompts if agent is still ready and not waiting for user."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq org-roam-todo-wf-tools--ready-timer nil)
+      ;; Check conditions for prompting
+      (when (and org-roam-todo-wf-tools--todo-file
+                 (not org-roam-todo-wf-tools--agent-waiting)
+                 ;; Check agent is still ready
+                 (boundp 'claude-agent--thinking-status)
+                 (not claude-agent--thinking-status))
+        ;; Send system message reminder
+        (when (fboundp 'claude-agent--send-system-message)
+          (claude-agent--send-system-message
+           "WORKFLOW REMINDER: If you have completed the task, please call `mcp__emacs__todo_advance` to advance the TODO to the next workflow status. If you need user input to continue, call `mcp__emacs__todo_wait_for_user` with a description of what you need."))))))
+
 (defun org-roam-todo-wf-tools--send-task-to-agent (buffer todo)
   "Send TODO task to agent BUFFER."
-  (let ((title (plist-get todo :title))
-        (description (or (plist-get todo :description) ""))
-        (worktree-path (plist-get todo :worktree-path)))
+  (let* ((title (plist-get todo :title))
+         (file (plist-get todo :file))
+         (worktree-path (plist-get todo :worktree-path))
+         ;; Read full task description from the TODO file
+         (task-content (org-roam-todo-wf-tools--read-todo-content file)))
     (with-current-buffer buffer
-      (let ((msg (format "[WORKTREE TASK]
+      (let ((msg (format "I'm delegating the following task to you:
 
-## Task
+* %s
+
+TODO file: %s
+
 %s
 
-%s
+** Workflow Tools
 
-## Worktree
-%s
+You have access to =mcp__emacs__todo_*= tools for managing this task:
 
-## Instructions
-1. Implement the task
-2. Stage your changes with `magit_stage`
-3. Call `org-roam-todo-wf-tools-submit` with a commit message when ready
+- =mcp__emacs__todo_advance= - Advance the TODO to the next workflow status
+- =mcp__emacs__todo_reject= - If the task cannot be completed, reject it with a reason
 
-The workflow will handle pushing and PR creation automatically."
-                         title description worktree-path)))
+Please review the task and acceptance criteria, then begin working on it."
+                         title file task-content)))
         (when (boundp 'claude-agent--message-queue)
           (push msg claude-agent--message-queue))))))
+
+(defun org-roam-todo-wf-tools--read-todo-content (file)
+  "Read the task description and acceptance criteria from TODO FILE."
+  (when (and file (file-exists-p file))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((content (buffer-string))
+            (sections '()))
+        ;; Extract Task Description section
+        (when (string-match "\\*\\* Task Description\\s-*\n\\(\\(?:.*\n\\)*?\\)\\(?:\\*\\* \\|\\'" content)
+          (push (format "** Task Description\n\n%s" 
+                        (string-trim (match-string 1 content)))
+                sections))
+        ;; Extract Acceptance Criteria section
+        (when (string-match "\\*\\* Acceptance Criteria\\s-*\n\\(\\(?:.*\n\\)*?\\)\\(?:\\*\\* \\|\\'" content)
+          (push (format "** Acceptance Criteria\n%s"
+                        (string-trim (match-string 1 content)))
+                sections))
+        (string-join (nreverse sections) "\n\n")))))
 
 (defun org-roam-todo-wf-tools--set-property (file property value)
   "Set PROPERTY to VALUE in TODO FILE."
@@ -566,7 +709,26 @@ The tool will automatically apply transitions when validation state changes."
           :safe t
           :args ((todo-id string :required "TODO file path, title, or ID")
                  (poll-interval integer "Seconds between checks (default: 30)")
-                 (timeout integer "Maximum seconds to wait (default: 3600)")))))))
+                 (timeout integer "Maximum seconds to wait (default: 3600)")))
+
+        (claude-mcp-deftool todo-wait-for-user
+          "Signal that you are waiting for user input before continuing.
+Call this when you need clarification, approval, or other input from the user.
+
+This tool:
+1. Shows a 'waiting for user' indicator in the TODO status UI
+2. Notifies the user that you need their attention
+3. Prevents workflow reminder prompts while waiting
+
+The waiting state is automatically cleared when:
+- The user sends you a message
+- You call todo-advance or todo-reject
+
+To explicitly clear the waiting state, call with an empty reason."
+          :function #'org-roam-todo-wf-tools-wait-for-user
+          :safe t
+          :needs-session-cwd t
+          :args ((reason string :required "What you are waiting for from the user")))))))
 
 (provide 'org-roam-todo-wf-tools)
 ;;; org-roam-todo-wf-tools.el ends here
