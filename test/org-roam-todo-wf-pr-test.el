@@ -985,5 +985,271 @@ the user-approval validation."
     ;; Even though not approved, ci->ready doesn't require user approval
     (should-not (org-roam-todo-status--needs-review-p todo))))
 
+
+;;; ============================================================
+;;; PR Title and Body Helper Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-get-pr-title-from-section ()
+  "Test get-pr-title returns content from PR Title section."
+  :tags '(:unit :wf :pr :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Title\n\nFix: Important bug fix\n\n")
+            (insert "** PR Description\n\nThis fixes an important bug.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            (should (string= "Fix: Important bug fix"
+                             (org-roam-todo-wf-pr--get-pr-title event)))))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-get-pr-title-fallback-to-title ()
+  "Test get-pr-title falls back to TODO title when no PR Title section."
+  :tags '(:unit :wf :pr :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO Title\n\n")
+            (insert "** Task Description\n\nSome description.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            (mocker-let
+                ((org-roam-todo-prop (event prop)
+                   ((:input-matcher (lambda (e p) (string= p "TITLE"))
+                     :output "My TODO Title"))))
+              (should (string= "My TODO Title"
+                               (org-roam-todo-wf-pr--get-pr-title event))))))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-get-pr-title-custom-function ()
+  "Test get-pr-title uses custom function when set."
+  :tags '(:unit :wf :pr :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((org-roam-todo-wf-pr-title-function
+          (lambda (_event) "Custom PR Title"))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test.org"))))
+    (should (string= "Custom PR Title"
+                     (org-roam-todo-wf-pr--get-pr-title event)))))
+
+(ert-deftest wf-pr-test-get-pr-body-from-section ()
+  "Test get-pr-body returns content from PR Description section."
+  :tags '(:unit :wf :pr :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Title\n\nFix bug\n\n")
+            (insert "** PR Description\n\n## Summary\n\nThis PR fixes the bug.\n\n## Test Plan\n\n- Test manually\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file)))
+                 (body (org-roam-todo-wf-pr--get-pr-body event)))
+            (should (string-match-p "## Summary" body))
+            (should (string-match-p "This PR fixes the bug" body))))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-get-pr-body-custom-function ()
+  "Test get-pr-body uses custom function when set."
+  :tags '(:unit :wf :pr :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((org-roam-todo-wf-pr-body-function
+          (lambda (_event) "Custom body content"))
+         (event (make-org-roam-todo-event
+                 :todo (list :file "/tmp/test.org"))))
+    (should (string= "Custom body content"
+                     (org-roam-todo-wf-pr--get-pr-body event)))))
+
+;;; ============================================================
+;;; PR Sections Validation Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-require-pr-sections-pass ()
+  "Test require-pr-sections passes when both sections exist."
+  :tags '(:unit :wf :pr :validation :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org"))
+         (org-roam-todo-wf-pr-require-pr-sections t))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Title\n\nFix: Bug fix\n\n")
+            (insert "** PR Description\n\nThis fixes the bug.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            ;; Should not error
+            (should-not (org-roam-todo-wf-pr--require-pr-sections event))))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-require-pr-sections-missing-title ()
+  "Test require-pr-sections fails when PR Title section is missing."
+  :tags '(:unit :wf :pr :validation :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org"))
+         (org-roam-todo-wf-pr-require-pr-sections t))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Description\n\nThis fixes the bug.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            (should-error (org-roam-todo-wf-pr--require-pr-sections event)
+                          :type 'user-error)))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-require-pr-sections-missing-description ()
+  "Test require-pr-sections fails when PR Description section is missing."
+  :tags '(:unit :wf :pr :validation :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org"))
+         (org-roam-todo-wf-pr-require-pr-sections t))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Title\n\nFix: Bug fix\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            (should-error (org-roam-todo-wf-pr--require-pr-sections event)
+                          :type 'user-error)))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-require-pr-sections-empty-title ()
+  "Test require-pr-sections fails when PR Title section is empty."
+  :tags '(:unit :wf :pr :validation :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org"))
+         (org-roam-todo-wf-pr-require-pr-sections t))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** PR Title\n\n")
+            (insert "** PR Description\n\nSome description.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            (should-error (org-roam-todo-wf-pr--require-pr-sections event)
+                          :type 'user-error)))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-require-pr-sections-disabled ()
+  "Test require-pr-sections passes when validation is disabled."
+  :tags '(:unit :wf :pr :validation :pr-sections)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-file (make-temp-file "test-todo-" nil ".org"))
+         (org-roam-todo-wf-pr-require-pr-sections nil))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Task Description\n\nNo PR sections here.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file temp-file))))
+            ;; Should not error when validation is disabled
+            (should-not (org-roam-todo-wf-pr--require-pr-sections event))))
+      (delete-file temp-file))))
+
+;;; ============================================================
+;;; PR Creation with PR Property Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-test-create-draft-pr-saves-pr-number ()
+  "Test create-draft-pr saves PR number to TODO file."
+  :tags '(:unit :wf :pr :forge :pr-property)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-repo-" t))
+         (temp-todo (make-temp-file "test-todo-" nil ".org"))
+         (wf (make-org-roam-todo-workflow :config '(:rebase-target "origin/main")))
+         (event (make-org-roam-todo-event
+                 :todo (list :file temp-todo)
+                 :workflow wf))
+         (mock-repo (make-org-roam-todo-wf-pr-test--mock-github-repo))
+         (callback-called nil)
+         (saved-pr-number nil)
+         (org-roam-todo-wf-pr-require-pr-sections nil))
+    (unwind-protect
+        (progn
+          ;; Create TODO file with PR sections
+          (with-temp-file temp-todo
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: Test TODO\n\n")
+            (insert "** PR Title\n\nTest PR\n\n")
+            (insert "** PR Description\n\nTest description.\n"))
+          (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
+          (mocker-let
+              ((org-roam-todo-prop (event prop)
+                 ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
+                   :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "TITLE"))
+                   :output "Test TODO")
+                  (:input-matcher (lambda (e p) (string= p "DESCRIPTION"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PROJECT_NAME"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
+                   :output nil)))
+               (org-roam-todo-wf-pr--get-forge-repo (path)
+                 ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
+               (forge--rest (repo method endpoint data &rest args)
+                 ((:input-matcher
+                   (lambda (r m e d &rest a)
+                     (when (and (string= m "POST")
+                                (string-match-p "pulls" e))
+                       ;; Simulate calling the callback with PR data
+                       (let ((callback (plist-get (car a) :callback)))
+                         (when callback
+                           (funcall callback '((number . 123))))))
+                     t)
+                   :output nil)))
+               (org-roam-todo-set-file-property (file prop value)
+                 ((:input-matcher
+                   (lambda (f p v)
+                     (when (string= p "PR")
+                       (setq saved-pr-number v))
+                     t)
+                   :output nil)))
+               (forge--pull (repo)
+                 ((:input-matcher (lambda (r) t) :output nil))))
+            (org-roam-todo-wf-pr--create-draft-pr event)
+            ;; Verify PR number was saved
+            (should (string= "123" saved-pr-number))))
+      (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice)
+      (delete-directory temp-dir t)
+      (delete-file temp-todo))))
+
+(ert-deftest wf-pr-test-validate-ci-includes-pr-sections ()
+  "Test that :validate-ci hook includes PR sections validation."
+  :tags '(:unit :wf :pr :validation)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
+         (hooks (org-roam-todo-workflow-hooks wf))
+         (validate-ci-hooks (cdr (assq :validate-ci hooks))))
+    (should validate-ci-hooks)
+    (should (member 'org-roam-todo-wf-pr--require-pr-sections validate-ci-hooks))))
+
 (provide 'org-roam-todo-wf-pr-test)
 ;;; org-roam-todo-wf-pr-test.el ends here

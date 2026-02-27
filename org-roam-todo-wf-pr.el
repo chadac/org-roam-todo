@@ -67,6 +67,29 @@ Set nil to use built-in GitHub/GitLab methods."
                  (function :tag "Custom function"))
   :group 'org-roam-todo-wf-pr)
 
+(defcustom org-roam-todo-wf-pr-title-function nil
+  "Function to generate PR title from TODO.
+When set, called with EVENT and should return the PR title string.
+When nil, uses the PR Title section or falls back to TODO title."
+  :type '(choice (const :tag "Use PR Title section or TODO title" nil)
+                 (function :tag "Custom function"))
+  :group 'org-roam-todo-wf-pr)
+
+(defcustom org-roam-todo-wf-pr-body-function nil
+  "Function to generate PR body/description from TODO.
+When set, called with EVENT and should return the PR body string.
+When nil, uses the PR Description section or generates a default body."
+  :type '(choice (const :tag "Use PR Description section or default" nil)
+                 (function :tag "Custom function"))
+  :group 'org-roam-todo-wf-pr)
+
+(defcustom org-roam-todo-wf-pr-require-pr-sections t
+  "Whether to require PR Title and PR Description sections before PR creation.
+When non-nil, the :validate-ci hook will check that these sections exist
+and are non-empty in the TODO file."
+  :type 'boolean
+  :group 'org-roam-todo-wf-pr)
+
 ;;; ============================================================
 ;;; EIEIO Slot Access Helper
 ;;; ============================================================
@@ -204,6 +227,57 @@ GitHub/GitLab APIs expect branch names without remote prefixes."
       (match-string 1 branch)
     branch))
 
+(defun org-roam-todo-wf-pr--get-pr-title (event)
+  "Get the PR title for EVENT.
+Resolution order:
+1. Custom function from `org-roam-todo-wf-pr-title-function'
+2. PR Title section from TODO file
+3. TODO title as fallback"
+  (or (when org-roam-todo-wf-pr-title-function
+        (funcall org-roam-todo-wf-pr-title-function event))
+      (let ((file (org-roam-todo--resolve-file event)))
+        (when file
+          (let ((pr-title (org-roam-todo-get-file-section file "PR Title")))
+            (when (and pr-title (not (string-empty-p (string-trim pr-title))))
+              (string-trim pr-title)))))
+      (org-roam-todo-prop event "TITLE")))
+
+(defun org-roam-todo-wf-pr--get-pr-body (event)
+  "Get the PR body/description for EVENT.
+Resolution order:
+1. Custom function from `org-roam-todo-wf-pr-body-function'
+2. PR Description section from TODO file
+3. Default body with TODO title/description"
+  (or (when org-roam-todo-wf-pr-body-function
+        (funcall org-roam-todo-wf-pr-body-function event))
+      (let ((file (org-roam-todo--resolve-file event)))
+        (when file
+          (let ((pr-body (org-roam-todo-get-file-section file "PR Description")))
+            (when (and pr-body (not (string-empty-p (string-trim pr-body))))
+              (string-trim pr-body)))))
+      ;; Default fallback
+      (let ((title (org-roam-todo-prop event "TITLE"))
+            (description (org-roam-todo-prop event "DESCRIPTION")))
+        (format "## TODO\n\n%s\n\n---\n_Managed by org-roam-todo_"
+                (or description title)))))
+
+(defun org-roam-todo-wf-pr--require-pr-sections (event)
+  "Validate: PR Title and PR Description sections exist and are non-empty.
+EVENT is the workflow event context.
+Only validates if `org-roam-todo-wf-pr-require-pr-sections' is non-nil."
+  (when org-roam-todo-wf-pr-require-pr-sections
+    (let* ((file (org-roam-todo--resolve-file event))
+           (pr-title (when file (org-roam-todo-get-file-section file "PR Title")))
+           (pr-body (when file (org-roam-todo-get-file-section file "PR Description")))
+           (missing '()))
+      (unless (and pr-title (not (string-empty-p (string-trim pr-title))))
+        (push "PR Title" missing))
+      (unless (and pr-body (not (string-empty-p (string-trim pr-body))))
+        (push "PR Description" missing))
+      (when missing
+        (user-error "Missing required sections for PR creation: %s"
+                    (string-join (nreverse missing) ", "))))))
+
 ;;; ------------------------------------------------------------
 ;;; PR Workflow Hooks
 ;;; ------------------------------------------------------------
@@ -213,14 +287,15 @@ GitHub/GitLab APIs expect branch names without remote prefixes."
 EVENT is the workflow event context.
 Uses forge to create a draft PR targeting the rebase-target branch.
 Dispatches to the appropriate forge backend (GitHub, GitLab, etc.).
+Saves the PR number to the TODO's PR property for status tracking.
 Reads properties fresh from file."
   (let* ((workflow (org-roam-todo-event-workflow event))
+         (todo-file (org-roam-todo--resolve-file event))
          (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
-         (title (org-roam-todo-prop event "TITLE"))
-         (description (org-roam-todo-prop event "DESCRIPTION"))
-         (body (format "## TODO\n\n%s\n\n---\n_Managed by org-roam-todo_"
-                       (or description title)))
+         ;; Use the new helper functions for PR title and body
+         (title (org-roam-todo-wf-pr--get-pr-title event))
+         (body (org-roam-todo-wf-pr--get-pr-body event))
          ;; Get target branch and strip remote prefix for PR API
          (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
          (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
@@ -233,8 +308,13 @@ Reads properties fresh from file."
        repo-type
        title body target branch
        t  ; draft-p
-       (lambda (&rest _)
-         (message "Draft PR created for %s" title)
+       (lambda (data &rest _)
+         ;; Extract PR number from response and save to TODO
+         (let ((pr-number (or (alist-get 'number data)
+                              (alist-get 'iid data))))  ; GitLab uses 'iid'
+           (when (and pr-number todo-file)
+             (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
+             (message "Draft PR #%s created for %s" pr-number title)))
          (forge--pull repo))
        (lambda (&rest args)
          (message "Failed to create PR: %S" args))))))
@@ -432,8 +512,10 @@ Requirements:
                          org-roam-todo-wf--ensure-worktree))
 
     ;; Validation before CI: ensure clean state with commits on branch
+    ;; Also validate PR sections exist if required
     (:validate-ci . (org-roam-todo-wf--require-clean-worktree
-                     org-roam-todo-wf--require-branch-has-commits))
+                     org-roam-todo-wf--require-branch-has-commits
+                     org-roam-todo-wf-pr--require-pr-sections))
 
     ;; When entering CI: rebase, push, create draft PR
     (:on-enter-ci . (org-roam-todo-wf-pr--on-enter-ci))
