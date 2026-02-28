@@ -26,7 +26,7 @@
 
 ;; Forward declarations for functions from org-roam-todo.el
 (declare-function org-roam-todo--query-todos "org-roam-todo" (&optional project-filter))
-(declare-function org-roam-todo-mcp-add-progress "org-roam-todo" (message &optional todo-id))
+(declare-function org-roam-todo-mcp-add-progress "org-roam-todo-core" (message &optional todo-id))
 
 ;;; ============================================================
 ;;; TODO Resolution
@@ -948,7 +948,22 @@ Use this to:
           :safe t
           :needs-session-cwd t
           :args ((todo-id string "Optional: TODO file path, title, or ID")
-                 (check-name string "Optional: specific check name to view logs for")))))))
+                 (check-name string "Optional: specific check name to view logs for")))
+
+        (claude-mcp-deftool todo-add-progress
+          "Add an entry to the TODO's progress log.
+Use this to document progress, decisions, or important events during task work.
+Entries are timestamped automatically.
+
+Examples of good progress entries:
+- \"Identified root cause: missing null check in parser\"
+- \"Implemented first draft of feature, needs testing\"
+- \"Blocked: waiting for API documentation\"
+- \"Fixed failing tests, all green now\""
+          :function #'org-roam-todo-mcp-add-progress
+          :safe t
+          :args ((message string :required "Progress message to log")
+                 (todo-id string "Optional: TODO file path, title, or ID (defaults to current)")))))))
 
 (provide 'org-roam-todo-wf-tools)
 ;;; org-roam-todo-wf-tools.el ends here

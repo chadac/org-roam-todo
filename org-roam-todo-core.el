@@ -859,6 +859,56 @@ Returns the number of criteria successfully marked."
         (setq count (1+ count))))
     count))
 
+;;;; Progress Log Functions
+
+(defun org-roam-todo-add-progress-entry (file message)
+  "Add MESSAGE as a progress log entry in TODO FILE.
+Appends the message with a timestamp to the Progress Log section.
+Creates the Progress Log section if it doesn't exist.
+Returns a success message string."
+  (when (and file (file-exists-p file))
+    (with-current-buffer (find-file-noselect file)
+      (save-excursion
+        (goto-char (point-min))
+        (let ((timestamp (format-time-string "[%Y-%m-%d %H:%M]")))
+          (if (re-search-forward "^\\*+\\s-+Progress Log\\s-*$" nil t)
+              ;; Found Progress Log section - add entry after heading
+              (progn
+                (forward-line 1)
+                ;; Skip any blank lines at the start of the section
+                (while (and (not (eobp))
+                            (looking-at "^\\s-*$"))
+                  (forward-line 1))
+                (insert (format "\n%s %s\n" timestamp message)))
+            ;; No Progress Log section - create it at end of file
+            (goto-char (point-max))
+            (unless (bolp) (insert "\n"))
+            (insert (format "\n** Progress Log\n\n%s %s\n" timestamp message))))
+        (save-buffer)))
+    (format "Added progress: %s" message)))
+
+(defun org-roam-todo-mcp-add-progress (message &optional todo-id)
+  "Add MESSAGE to the progress log of a TODO.
+TODO-ID can be a file path, title, or ID.  If nil, tries to infer
+from the current worktree.
+This function is called by MCP tools to log progress entries."
+  (let ((file (cond
+               ;; Direct file path
+               ((and (stringp todo-id) (file-exists-p todo-id))
+                todo-id)
+               ;; TODO-ID provided - need to resolve it
+               (todo-id
+                ;; Try to find the TODO file
+                (when (fboundp 'org-roam-todo-wf-tools--get-todo)
+                  (plist-get (org-roam-todo-wf-tools--get-todo todo-id) :file)))
+               ;; No TODO-ID - try to infer from worktree
+               (t
+                (when (fboundp 'org-roam-todo-wf-tools--get-todo)
+                  (plist-get (org-roam-todo-wf-tools--get-todo nil) :file))))))
+    (if file
+        (org-roam-todo-add-progress-entry file message)
+      (user-error "Could not find TODO file for: %s" (or todo-id "current")))))
+
 ;;;; TODO Capture
 
 (defun org-roam-todo--org-roam-projects-dir ()
