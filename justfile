@@ -20,6 +20,7 @@ _test_files := "-l test/org-roam-todo-test.el \
     -l test/org-roam-todo-wf-actions-integration-test.el \
     -l test/org-roam-todo-wf-local-test.el \
     -l test/org-roam-todo-wf-pr-test.el \
+    -l test/org-roam-todo-wf-pr-feedback-test.el \
     -l test/org-roam-todo-wf-tools-test.el"
 
 # Internal: run tests with given selector, quiet on success

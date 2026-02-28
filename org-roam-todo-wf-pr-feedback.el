@@ -158,12 +158,18 @@ Returns list of review plists with inline comments."
 
 (defun org-roam-todo-wf-pr-feedback--gh-get-review-comments (worktree-path)
   "Get inline review comments from GitHub using gh CLI.
-Returns list of comment plists with file/line info."
+Returns list of comment plists with file/line info and diff context."
   (let ((default-directory worktree-path))
     (condition-case nil
-        (let* ((json-str (shell-command-to-string
-                          "gh api repos/{owner}/{repo}/pulls/{number}/comments 2>/dev/null"))
-               (comments (json-read-from-string json-str)))
+        ;; First get PR number, then fetch comments
+        (let* ((pr-number (string-trim
+                           (shell-command-to-string
+                            "gh pr view --json number -q .number 2>/dev/null")))
+               (json-str (when (and pr-number (not (string-empty-p pr-number)))
+                           (shell-command-to-string
+                            (format "gh api repos/:owner/:repo/pulls/%s/comments 2>/dev/null"
+                                    pr-number))))
+               (comments (when json-str (json-read-from-string json-str))))
           (when (vectorp comments)
             (mapcar (lambda (c)
                       (list :id (alist-get 'id c)
@@ -172,6 +178,7 @@ Returns list of comment plists with file/line info."
                             :path (alist-get 'path c)
                             :line (or (alist-get 'line c)
                                       (alist-get 'original_line c))
+                            :diff-hunk (alist-get 'diff_hunk c)
                             :state (if (alist-get 'in_reply_to_id c)
                                        'reply
                                      (if (string= "RESOLVED"
@@ -390,64 +397,67 @@ Otherwise, clear the entire cache."
 Returns a feedback plist with :pr-number, :pr-state, :pr-url,
 :comments, :reviews, :review-comments, :ci-checks.
 
-If FORCE-REFRESH is non-nil, bypasses the cache."
-  (unless force-refresh
-    (when-let ((cached (org-roam-todo-wf-pr-feedback--cache-get worktree-path)))
-      (cl-return-from org-roam-todo-wf-pr-feedback-fetch cached)))
+If FORCE-REFRESH is non-nil, bypasses the cache.
+Returns nil if WORKTREE-PATH doesn't exist or is not a git repository."
+  (when (and worktree-path (file-directory-p worktree-path))
+    ;; Check cache first (unless force-refresh)
+    (let ((cached (unless force-refresh
+                    (org-roam-todo-wf-pr-feedback--cache-get worktree-path))))
+      (if cached
+          cached
+        ;; Not in cache, fetch fresh data
+        (let* ((forge (org-roam-todo-wf-pr-feedback--detect-forge worktree-path))
+               (feedback
+                (pcase forge
+                  (:github
+                   (let ((pr-info (org-roam-todo-wf-pr-feedback--gh-get-pr-info worktree-path)))
+                     (when pr-info
+                       (let ((ci-checks (org-roam-todo-wf-pr-feedback--gh-get-ci-checks worktree-path)))
+                         ;; Fetch log tails for failed checks
+                         (dolist (check ci-checks)
+                           (when (eq (plist-get check :status) 'failure)
+                             (when-let ((run-id (org-roam-todo-wf-pr-feedback--gh-get-run-id-for-check
+                                                 worktree-path (plist-get check :name))))
+                               (plist-put check :run-id run-id)
+                               (plist-put check :log-tail
+                                          (org-roam-todo-wf-pr-feedback--gh-get-failed-run-logs
+                                           worktree-path run-id
+                                           org-roam-todo-wf-pr-feedback-ci-log-lines)))))
+                         (list :forge :github
+                               :pr-number (plist-get pr-info :number)
+                               :pr-state (plist-get pr-info :state)
+                               :pr-url (plist-get pr-info :url)
+                               :comments (org-roam-todo-wf-pr-feedback--gh-get-comments worktree-path)
+                               :reviews (org-roam-todo-wf-pr-feedback--gh-get-reviews worktree-path)
+                               :review-comments (org-roam-todo-wf-pr-feedback--gh-get-review-comments worktree-path)
+                               :ci-checks ci-checks
+                               :timestamp (current-time))))))
 
-  (let* ((forge (org-roam-todo-wf-pr-feedback--detect-forge worktree-path))
-         (feedback
-          (pcase forge
-            (:github
-             (let ((pr-info (org-roam-todo-wf-pr-feedback--gh-get-pr-info worktree-path)))
-               (when pr-info
-                 (let ((ci-checks (org-roam-todo-wf-pr-feedback--gh-get-ci-checks worktree-path)))
-                   ;; Fetch log tails for failed checks
-                   (dolist (check ci-checks)
-                     (when (eq (plist-get check :status) 'failure)
-                       (when-let ((run-id (org-roam-todo-wf-pr-feedback--gh-get-run-id-for-check
-                                           worktree-path (plist-get check :name))))
-                         (plist-put check :run-id run-id)
-                         (plist-put check :log-tail
-                                    (org-roam-todo-wf-pr-feedback--gh-get-failed-run-logs
-                                     worktree-path run-id
-                                     org-roam-todo-wf-pr-feedback-ci-log-lines)))))
-                   (list :forge :github
-                         :pr-number (plist-get pr-info :number)
-                         :pr-state (plist-get pr-info :state)
-                         :pr-url (plist-get pr-info :url)
-                         :comments (org-roam-todo-wf-pr-feedback--gh-get-comments worktree-path)
-                         :reviews (org-roam-todo-wf-pr-feedback--gh-get-reviews worktree-path)
-                         :review-comments (org-roam-todo-wf-pr-feedback--gh-get-review-comments worktree-path)
-                         :ci-checks ci-checks
-                         :timestamp (current-time))))))
+                  (:gitlab
+                   (let ((mr-info (org-roam-todo-wf-pr-feedback--glab-get-mr-info worktree-path)))
+                     (when mr-info
+                       (let ((ci-checks (org-roam-todo-wf-pr-feedback--glab-get-ci-pipelines worktree-path)))
+                         ;; Fetch log tails for failed jobs
+                         (dolist (check ci-checks)
+                           (when (eq (plist-get check :status) 'failure)
+                             (when-let ((job-id (plist-get check :job-id)))
+                               (plist-put check :log-tail
+                                          (org-roam-todo-wf-pr-feedback--glab-get-job-logs
+                                           worktree-path job-id
+                                           org-roam-todo-wf-pr-feedback-ci-log-lines)))))
+                         (list :forge :gitlab
+                               :pr-number (plist-get mr-info :number)
+                               :pr-state (plist-get mr-info :state)
+                               :pr-url (plist-get mr-info :url)
+                               :comments (org-roam-todo-wf-pr-feedback--glab-get-comments worktree-path)
+                               :discussions (org-roam-todo-wf-pr-feedback--glab-get-discussions worktree-path)
+                               :ci-checks ci-checks
+                               :timestamp (current-time))))))
 
-            (:gitlab
-             (let ((mr-info (org-roam-todo-wf-pr-feedback--glab-get-mr-info worktree-path)))
-               (when mr-info
-                 (let ((ci-checks (org-roam-todo-wf-pr-feedback--glab-get-ci-pipelines worktree-path)))
-                   ;; Fetch log tails for failed jobs
-                   (dolist (check ci-checks)
-                     (when (eq (plist-get check :status) 'failure)
-                       (when-let ((job-id (plist-get check :job-id)))
-                         (plist-put check :log-tail
-                                    (org-roam-todo-wf-pr-feedback--glab-get-job-logs
-                                     worktree-path job-id
-                                     org-roam-todo-wf-pr-feedback-ci-log-lines)))))
-                   (list :forge :gitlab
-                         :pr-number (plist-get mr-info :number)
-                         :pr-state (plist-get mr-info :state)
-                         :pr-url (plist-get mr-info :url)
-                         :comments (org-roam-todo-wf-pr-feedback--glab-get-comments worktree-path)
-                         :discussions (org-roam-todo-wf-pr-feedback--glab-get-discussions worktree-path)
-                         :ci-checks ci-checks
-                         :timestamp (current-time))))))
-
-            (_ nil))))
-
-    (when feedback
-      (org-roam-todo-wf-pr-feedback--cache-set worktree-path feedback))
-    feedback))
+                  (_ nil))))
+          (when feedback
+            (org-roam-todo-wf-pr-feedback--cache-set worktree-path feedback))
+          feedback)))))
 
 ;;; ============================================================
 ;;; Feedback Summarization

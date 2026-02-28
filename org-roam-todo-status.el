@@ -573,52 +573,173 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
           (dolist (check sorted-checks)
             (org-roam-todo-status--insert-ci-check check worktree-path)))))))
 
+(defface org-roam-todo-status-comment-author
+  '((((class color) (background dark)) :foreground "#c678dd" :weight bold)
+    (((class color) (background light)) :foreground "#a626a4" :weight bold))
+  "Face for comment authors."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-comment-body
+  '((((class color) (background dark)) :foreground "#abb2bf")
+    (((class color) (background light)) :foreground "#383a42"))
+  "Face for comment body text."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-comment-code
+  '((((class color) (background dark)) :foreground "#98c379" :background "#2c323c")
+    (((class color) (background light)) :foreground "#50a14f" :background "#f0f0f0"))
+  "Face for inline code in comments."
+  :group 'org-roam-todo-status)
+
+(defun org-roam-todo-status--render-markdown-line (text)
+  "Render basic markdown formatting in TEXT.
+Handles inline code (`code`), bold (**bold**), and italic (*italic*)."
+  (let ((result text))
+    ;; Inline code: `code`
+    (setq result
+          (replace-regexp-in-string
+           "`\\([^`]+\\)`"
+           (lambda (match)
+             (org-roam-todo-status--propertize
+              (match-string 1 match)
+              'org-roam-todo-status-comment-code))
+           result t t))
+    ;; Bold: **text** or __text__
+    (setq result
+          (replace-regexp-in-string
+           "\\*\\*\\([^*]+\\)\\*\\*\\|__\\([^_]+\\)__"
+           (lambda (match)
+             (let ((content (or (match-string 1 match) (match-string 2 match))))
+               (org-roam-todo-status--propertize content '(:weight bold))))
+           result t t))
+    ;; Italic: *text* or _text_ (but not inside words)
+    (setq result
+          (replace-regexp-in-string
+           "\\(?:^\\|[^*_]\\)\\([*_]\\)\\([^*_\n]+\\)\\1\\(?:[^*_]\\|$\\)"
+           (lambda (match)
+             (org-roam-todo-status--propertize
+              (match-string 2 match)
+              '(:slant italic)))
+           result t t))
+    result))
+
+(defface org-roam-todo-status-diff-hunk
+  '((((class color) (background dark)) :foreground "#7c8490" :background "#2c323c" :extend t)
+    (((class color) (background light)) :foreground "#606060" :background "#e8e8e8" :extend t))
+  "Face for diff hunk context in comments."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-diff-add
+  '((((class color) (background dark)) :foreground "#b5e890" :background "#1e3a1e" :extend t)
+    (((class color) (background light)) :foreground "#1a6b1a" :background "#d4ffd4" :extend t))
+  "Face for added lines in diff hunks."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-diff-remove
+  '((((class color) (background dark)) :foreground "#f08080" :background "#4a2020" :extend t)
+    (((class color) (background light)) :foreground "#a00000" :background "#ffd4d4" :extend t))
+  "Face for removed lines in diff hunks."
+  :group 'org-roam-todo-status)
+
+(defun org-roam-todo-status--render-diff-line (line)
+  "Render a single diff LINE with appropriate face."
+  (cond
+   ((string-prefix-p "+" line)
+    (org-roam-todo-status--propertize line 'org-roam-todo-status-diff-add))
+   ((string-prefix-p "-" line)
+    (org-roam-todo-status--propertize line 'org-roam-todo-status-diff-remove))
+   ((string-prefix-p "@@" line)
+    (org-roam-todo-status--propertize line 'font-lock-keyword-face))
+   (t
+    (org-roam-todo-status--propertize line 'org-roam-todo-status-diff-hunk))))
+
 (defun org-roam-todo-status--insert-comment (comment)
-  "Insert a single COMMENT item."
+  "Insert a single COMMENT item with markdown rendering.
+Comments are displayed expanded by default showing full body.
+If the comment has a diff-hunk, shows the code context."
   (let* ((author (plist-get comment :author))
          (body (plist-get comment :body))
          (path (plist-get comment :path))
          (line (plist-get comment :line))
+         (diff-hunk (plist-get comment :diff-hunk))
          (state (plist-get comment :state))
+         (created-at (plist-get comment :created-at))
          (face (if (eq state 'resolved)
                    'org-roam-todo-status-comment-resolved
                  'org-roam-todo-status-comment-unresolved))
          (indicator (if (eq state 'resolved) "✓" "○")))
-    (magit-insert-section section (org-roam-todo-status-comment-section)
+    (magit-insert-section section (org-roam-todo-status-comment-section nil nil)
       (oset section comment comment)
+      ;; Header line: indicator + author + location
       (insert "  ")
       (insert (org-roam-todo-status--propertize indicator face))
       (insert " ")
-      (insert (org-roam-todo-status--propertize (or author "unknown") 'font-lock-keyword-face))
+      (insert (org-roam-todo-status--propertize (format "@%s" (or author "unknown"))
+                                                'org-roam-todo-status-comment-author))
       (when path
-        (insert " on ")
+        (insert " ")
+        (insert (org-roam-todo-status--propertize "on " 'font-lock-comment-face))
         (insert (org-roam-todo-status--propertize
                  (file-name-nondirectory path)
                  'font-lock-string-face))
         (when line
-          (insert (format ":%d" line))))
+          (insert (org-roam-todo-status--propertize (format ":%d" line) 'font-lock-string-face))))
       (insert "\n")
-      ;; Show first line of comment body
+      ;; Show diff hunk if available (for inline code comments)
+      (when diff-hunk
+        (let* ((diff-lines (split-string diff-hunk "\n"))
+               (display-lines (seq-take (last diff-lines 8) 8))
+               (box-width 72))  ; Fixed width for the code box
+          ;; Show last few lines of context (most relevant to the comment)
+          (dolist (diff-line display-lines)
+            (when (and diff-line (not (string-empty-p diff-line)))
+              (insert "      ")
+              ;; Pad line to fixed width so background extends uniformly
+              (let* ((truncated (truncate-string-to-width diff-line (- box-width 2) nil nil "…"))
+                     (padded (concat truncated
+                                     (make-string (max 0 (- box-width (length truncated))) ?\s))))
+                (insert (org-roam-todo-status--render-diff-line padded)))
+              (insert "\n")))))
+      ;; Comment body with markdown rendering
       (when body
-        (let ((first-line (car (split-string body "\n" t))))
-          (when first-line
-            (insert "    ")
-            (insert (org-roam-todo-status--propertize
-                     (truncate-string-to-width first-line 60 nil nil "…")
-                     'font-lock-comment-face))
-            (insert "\n")))))))
+        (let ((lines (split-string body "\n" t "[ \t]+")))
+          (dolist (raw-line lines)
+            (let ((rendered-line (org-roam-todo-status--render-markdown-line raw-line)))
+              (insert "      ")
+              (insert rendered-line)
+              (insert "\n"))))))))
 
 (defun org-roam-todo-status--insert-comments-section (feedback)
-  "Insert comments/reviews section from FEEDBACK."
+  "Insert comments/reviews section from FEEDBACK.
+This includes:
+- Review comments (inline code comments)
+- PR comments (top-level conversation)
+- Review bodies (the actual review feedback text)"
   (let* ((review-comments (or (plist-get feedback :review-comments)
                               (plist-get feedback :discussions)))
          (comments (plist-get feedback :comments))
+         (reviews (plist-get feedback :reviews))
+         ;; Extract reviews that have body content (the actual review feedback)
+         (review-bodies (cl-remove-if-not
+                         (lambda (r)
+                           (let ((body (plist-get r :body)))
+                             (and body (not (string-empty-p body)))))
+                         reviews))
+         ;; Convert review bodies to comment format for display
+         (review-as-comments (mapcar
+                              (lambda (r)
+                                (list :author (plist-get r :author)
+                                      :body (plist-get r :body)
+                                      :state (plist-get r :state)
+                                      :created-at (plist-get r :submitted-at)))
+                              review-bodies))
          (summary (org-roam-todo-wf-pr-feedback-summary feedback))
          (unresolved (plist-get summary :unresolved-count))
-         (total-comments (+ (length review-comments) (length comments))))
+         (all-comments (append review-comments comments review-as-comments))
+         (total-comments (length all-comments)))
     (when (> total-comments 0)
       (magit-insert-section section (org-roam-todo-status-comments-section nil t)
-        (oset section comments (append review-comments comments))
+        (oset section comments all-comments)
         (magit-insert-heading
           (org-roam-todo-status--propertize "Comments " 'org-roam-todo-status-section-heading)
           (if (> unresolved 0)
@@ -632,6 +753,9 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
         (dolist (comment review-comments)
           (when (eq (plist-get comment :state) 'unresolved)
             (org-roam-todo-status--insert-comment comment)))
+        ;; Then review bodies (most recent first, limit to 5)
+        (dolist (comment (seq-take (reverse review-as-comments) 5))
+          (org-roam-todo-status--insert-comment comment))
         ;; Then regular comments (most recent first, limit to 5)
         (dolist (comment (seq-take (reverse comments) 5))
           (org-roam-todo-status--insert-comment comment))))))
@@ -690,8 +814,8 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
             (require 'org-roam-todo-wf-pr-feedback)
             (let ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path)))
               (when feedback
-                (magit-insert-section (org-roam-todo-status-pr-feedback-section nil t)
-                  (oset (magit-current-section) feedback feedback)
+                (magit-insert-section section (org-roam-todo-status-pr-feedback-section nil t)
+                  (oset section feedback feedback)
                   (insert "\n")
                   ;; PR URL header
                   (let ((pr-url (plist-get feedback :pr-url))
