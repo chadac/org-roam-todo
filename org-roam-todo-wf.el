@@ -179,19 +179,39 @@ Returns a plist with keys:
   "Return non-nil if STATUS has auto-upgrade configured in WORKFLOW."
   (org-roam-todo-wf--get-auto-upgrade-config workflow status))
 
+(defun org-roam-todo-wf--extract-result-status (result)
+  "Extract the status keyword from a validation RESULT.
+Handles both old format (direct status) and new format (plist with :result)."
+  (cond
+   ;; New format: (:priority N :function F :result R)
+   ((and (listp result) (plist-get result :result))
+    (let ((inner (plist-get result :result)))
+      (if (and (listp inner) (keywordp (car inner)))
+          (car inner)
+        inner)))
+   ;; Old format: direct status like :pass, (:fail "msg"), (:pending "msg")
+   ((and (listp result) (keywordp (car result)))
+    (car result))
+   ;; Plain keyword
+   ((keywordp result) result)
+   ;; Default
+   (t nil)))
+
 (defun org-roam-todo-wf--validation-state (results)
   "Determine overall state from validation RESULTS list.
 Returns:
   :pass - all validations passed
   :pending - at least one validation is pending
   :fail - at least one validation failed (and none pending)
-  :feedback - at least one validation requires feedback"
+  :feedback - at least one validation requires feedback
+
+Handles both old format (direct status) and new format (plist with :result)."
   (let ((has-pending nil)
         (has-fail nil)
         (has-feedback nil))
     (dolist (result results)
-      (when (listp result)
-        (pcase (car result)
+      (let ((status (org-roam-todo-wf--extract-result-status result)))
+        (pcase status
           (:pending (setq has-pending t))
           (:fail (setq has-fail t))
           (:error (setq has-fail t))
@@ -206,10 +226,37 @@ Returns:
 ;;; Event Dispatch
 ;;; ============================================================
 
+(defun org-roam-todo-wf--normalize-hook-entry (entry)
+  "Normalize a hook ENTRY to (priority . function) cons cell.
+Accepts:
+- A symbol (function) -> (50 . function) with default priority 50
+- A function (lambda or compiled) -> (50 . function) with default priority 50
+- A cons cell (priority . function) -> returned as-is"
+  (cond
+   ;; Plain symbol
+   ((symbolp entry) (cons 50 entry))
+   ;; Lambda or compiled function
+   ((functionp entry) (cons 50 entry))
+   ;; (priority . symbol) or (priority . function)
+   ((and (consp entry) (numberp (car entry))
+         (or (symbolp (cdr entry)) (functionp (cdr entry))))
+    entry)
+   (t (error "Invalid hook entry: %S (expected symbol, function, or (priority . function))" entry))))
+
+(defun org-roam-todo-wf--sort-hooks-by-priority (hooks)
+  "Sort HOOKS by priority (lower numbers first).
+HOOKS can be a list of symbols or (priority . symbol) cons cells."
+  (let ((normalized (mapcar #'org-roam-todo-wf--normalize-hook-entry hooks)))
+    (sort normalized (lambda (a b) (< (car a) (car b))))))
+
 (defun org-roam-todo-wf--dispatch-event (event)
   "Run all hooks registered for EVENT in its workflow.
 For :validate-* events: collects structured results from all hooks.
 For other events: runs hooks sequentially, stopping on 'stop return.
+
+Hooks can be specified as:
+- Plain symbols: run with default priority 50
+- (priority . symbol): run in priority order (lower first)
 
 Validation hooks can return:
 - nil or :pass - validation passed
@@ -224,19 +271,35 @@ Returns:
   (let* ((workflow (org-roam-todo-event-workflow event))
          (event-type (org-roam-todo-event-type event))
          (hooks (org-roam-todo-workflow-hooks workflow))
-         (fns (cdr (assq event-type hooks)))
-         (is-validation (string-match-p "^:validate-" (symbol-name event-type))))
+         (raw-fns (cdr (assq event-type hooks)))
+         (is-validation (string-match-p "^:validate-" (symbol-name event-type)))
+         ;; Sort validation hooks by priority; for non-validation, preserve order
+         (sorted-entries (if is-validation
+                            (org-roam-todo-wf--sort-hooks-by-priority raw-fns)
+                          (mapcar #'org-roam-todo-wf--normalize-hook-entry raw-fns)))
+         (fns (mapcar #'cdr sorted-entries)))
     (if (null fns)
         (if is-validation '(:results nil) 'completed)
       (if is-validation
           ;; Validation mode: collect all results (don't short-circuit)
+          ;; Include priority info in results for display purposes
           (list :results
-                (cl-loop for fn in fns
+                (cl-loop for entry in sorted-entries
+                         for priority = (car entry)
+                         for fn = (cdr entry)
                          collect (condition-case err
                                      (let ((result (funcall fn event)))
-                                       (or result :pass))
-                                   (user-error (list :fail (cadr err)))
-                                   (error (list :error (error-message-string err))))))
+                                       (list :priority priority
+                                             :function fn
+                                             :result (or result :pass)))
+                                   (user-error
+                                    (list :priority priority
+                                          :function fn
+                                          :result (list :fail (cadr err))))
+                                   (error
+                                    (list :priority priority
+                                          :function fn
+                                          :result (list :error (error-message-string err)))))))
           ;; Normal mode: run hooks sequentially
           (cl-loop for fn in fns
                    for result = (funcall fn event)
@@ -279,10 +342,14 @@ Transition flow:
           (intern (format ":validate-%s" new-status)))
     (let ((validation-results (org-roam-todo-wf--dispatch-event event)))
       ;; Check for blocking failures (:fail or :error)
+      ;; Handle both old format and new format with :priority/:function/:result
       (cl-loop for result in (plist-get validation-results :results)
-               when (and (listp result)
-                         (memq (car result) '(:fail :error)))
-               do (user-error "Validation failed: %s" (cadr result)))
+               for status = (org-roam-todo-wf--extract-result-status result)
+               for msg = (if (plist-get result :result)
+                            (cadr (plist-get result :result))
+                          (cadr result))
+               when (memq status '(:fail :error))
+               do (user-error "Validation failed: %s" msg))
 
       ;; Store results for auto-upgrade system and feedback display
       (when (plist-get validation-results :results)

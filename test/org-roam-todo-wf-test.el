@@ -216,8 +216,11 @@
                  :workflow org-roam-todo-wf-test--mock-workflow))
          (result (org-roam-todo-wf--dispatch-event event)))
     ;; With structured returns, dispatch collects results instead of raising errors
+    ;; New format: (:priority N :function F :result R) where R can be :pass or (:fail "msg")
     (should (plist-get result :results))
-    (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+    (should (cl-some (lambda (r)
+                       (let ((inner-result (plist-get r :result)))
+                         (and (listp inner-result) (eq (car inner-result) :fail))))
                      (plist-get result :results)))))
 
 (ert-deftest wf-test-validation-hook-passes ()
@@ -477,8 +480,11 @@
                    :actor 'human))
            (result (org-roam-todo-wf--dispatch-event event)))
       (should (plist-get result :results))
-      (should (cl-every (lambda (r) (or (eq r :pass)
-                                        (and (listp r) (eq (car r) :pass))))
+      ;; New format: each result is (:priority N :function F :result R)
+      (should (cl-every (lambda (r)
+                          (let ((inner (plist-get r :result)))
+                            (or (eq inner :pass)
+                                (and (listp inner) (eq (car inner) :pass)))))
                         (plist-get result :results))))
     ;; AI should fail
     (let* ((event (make-org-roam-todo-event
@@ -488,7 +494,9 @@
                   :actor 'ai))
            (result (org-roam-todo-wf--dispatch-event event)))
        (should (plist-get result :results))
-       (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+       (should (cl-some (lambda (r)
+                          (let ((inner (plist-get r :result)))
+                            (and (listp inner) (eq (car inner) :fail))))
                         (plist-get result :results))))))
 
 (ert-deftest wf-test-permission-hook-combined-with-other-validation ()
@@ -513,8 +521,11 @@
                    :actor 'human)))
       (setq custom-passed nil)
       (let ((result (org-roam-todo-wf--dispatch-event event)))
-        (should (cl-every (lambda (r) (or (eq r :pass)
-                                          (and (listp r) (eq (car r) :pass))))
+        ;; New format: each result is (:priority N :function F :result R)
+        (should (cl-every (lambda (r)
+                            (let ((inner (plist-get r :result)))
+                              (or (eq inner :pass)
+                                  (and (listp inner) (eq (car inner) :pass)))))
                           (plist-get result :results)))
         (should custom-passed)))
     ;; AI should fail at permission hook (custom should still run first)
@@ -525,7 +536,9 @@
                    :actor 'ai)))
       (setq custom-passed nil)
       (let ((result (org-roam-todo-wf--dispatch-event event)))
-        (should (cl-some (lambda (r) (and (listp r) (eq (car r) :fail)))
+        (should (cl-some (lambda (r)
+                           (let ((inner (plist-get r :result)))
+                             (and (listp inner) (eq (car inner) :fail))))
                          (plist-get result :results)))
         ;; Custom validator should have been called before permission check
         (should custom-passed)))))
@@ -575,6 +588,122 @@
         (should (equal "a" (org-roam-todo-wf-test--get-file-property todo-file "STATUS")))))))
 
 
+
+;;; ============================================================
+;;; Priority-Based Validation Tests
+;;; ============================================================
+
+(ert-deftest wf-test-normalize-hook-entry-symbol ()
+  "Test that plain symbols get default priority 50."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  (let ((result (org-roam-todo-wf--normalize-hook-entry 'my-function)))
+    (should (equal '(50 . my-function) result))))
+
+(ert-deftest wf-test-normalize-hook-entry-cons ()
+  "Test that (priority . function) cons cells are returned as-is."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  (let ((result (org-roam-todo-wf--normalize-hook-entry '(10 . my-function))))
+    (should (equal '(10 . my-function) result))))
+
+(ert-deftest wf-test-sort-hooks-by-priority ()
+  "Test that hooks are sorted by priority (lower numbers first)."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  (let* ((hooks '((30 . third-fn) first-fn (10 . second-fn)))
+         (sorted (org-roam-todo-wf--sort-hooks-by-priority hooks)))
+    ;; Should be: 10, 30, 50 (default)
+    (should (= 10 (car (nth 0 sorted))))
+    (should (eq 'second-fn (cdr (nth 0 sorted))))
+    (should (= 30 (car (nth 1 sorted))))
+    (should (eq 'third-fn (cdr (nth 1 sorted))))
+    (should (= 50 (car (nth 2 sorted))))
+    (should (eq 'first-fn (cdr (nth 2 sorted))))))
+
+(ert-deftest wf-test-validation-dispatch-returns-priority-info ()
+  "Test that validation dispatch returns priority info in results."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  (let* ((hook1 (lambda (e) nil))  ; passes
+         (hook2 (lambda (e) nil))  ; passes
+         (wf (make-org-roam-todo-workflow
+              :name 'priority-test
+              :statuses '("a" "b")
+              :hooks `((:validate-b . ((10 . ,hook1) (20 . ,hook2))))
+              :config nil))
+         (event (make-org-roam-todo-event
+                 :type :validate-b
+                 :todo '(:title "Test")
+                 :workflow wf
+                 :actor 'human))
+         (result (org-roam-todo-wf--dispatch-event event))
+         (results (plist-get result :results)))
+    ;; Should have 2 results
+    (should (= 2 (length results)))
+    ;; First result should have priority 10
+    (should (= 10 (plist-get (nth 0 results) :priority)))
+    ;; Second result should have priority 20
+    (should (= 20 (plist-get (nth 1 results) :priority)))
+    ;; Both should have :function and :result
+    (should (plist-get (nth 0 results) :function))
+    (should (plist-get (nth 0 results) :result))))
+
+(ert-deftest wf-test-validation-state-handles-new-format ()
+  "Test that validation-state handles new format with :priority/:function/:result."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  ;; Test pass state
+  (let ((results '((:priority 10 :function fn1 :result :pass)
+                   (:priority 20 :function fn2 :result :pass))))
+    (should (eq :pass (org-roam-todo-wf--validation-state results))))
+  ;; Test fail state
+  (let ((results '((:priority 10 :function fn1 :result :pass)
+                   (:priority 20 :function fn2 :result (:fail "error")))))
+    (should (eq :fail (org-roam-todo-wf--validation-state results))))
+  ;; Test pending state
+  (let ((results '((:priority 10 :function fn1 :result (:pending "waiting"))
+                   (:priority 20 :function fn2 :result :pass))))
+    (should (eq :pending (org-roam-todo-wf--validation-state results)))))
+
+(ert-deftest wf-test-extract-result-status-new-format ()
+  "Test that extract-result-status handles new format."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  ;; New format with :pass
+  (should (eq :pass (org-roam-todo-wf--extract-result-status
+                     '(:priority 10 :function fn :result :pass))))
+  ;; New format with (:fail "msg")
+  (should (eq :fail (org-roam-todo-wf--extract-result-status
+                     '(:priority 10 :function fn :result (:fail "error")))))
+  ;; Old format - direct status
+  (should (eq :fail (org-roam-todo-wf--extract-result-status
+                     '(:fail "error"))))
+  ;; Plain keyword
+  (should (eq :pass (org-roam-todo-wf--extract-result-status :pass))))
+
+(ert-deftest wf-test-priority-hooks-run-in-order ()
+  "Test that hooks with priority run in correct order."
+  :tags '(:unit :wf :priority)
+  (org-roam-todo-wf-test--require-wf)
+  (let* ((call-order nil)
+         (hook1 (lambda (e) (push 'first call-order) nil))
+         (hook2 (lambda (e) (push 'second call-order) nil))
+         (hook3 (lambda (e) (push 'third call-order) nil))
+         (wf (make-org-roam-todo-workflow
+              :name 'order-test
+              :statuses '("a" "b")
+              ;; Hooks defined out of order
+              :hooks `((:validate-b . ((30 . ,hook3) (10 . ,hook1) (20 . ,hook2))))
+              :config nil))
+         (event (make-org-roam-todo-event
+                 :type :validate-b
+                 :todo '(:title "Test")
+                 :workflow wf
+                 :actor 'human)))
+    (org-roam-todo-wf--dispatch-event event)
+    ;; call-order is built with push, so it's reversed
+    (should (equal '(third second first) call-order))))
 
 (provide 'org-roam-todo-wf-test)
 ;;; org-roam-todo-wf-test.el ends here

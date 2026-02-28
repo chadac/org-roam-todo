@@ -427,7 +427,10 @@ This checks if the validation hooks for the next status include
       (let* ((hooks (org-roam-todo-workflow-hooks workflow))
              (validate-key (intern (format ":validate-%s" next-status)))
              (fns (cdr (assq validate-key hooks))))
-        (memq 'org-roam-todo-wf--require-user-approval fns)))))
+        ;; Handle both old format (list of symbols) and new format (list of (priority . function) cons cells)
+        (cl-find 'org-roam-todo-wf--require-user-approval fns
+                 :key (lambda (entry)
+                        (if (consp entry) (cdr entry) entry)))))))
 
 (defun org-roam-todo-status--needs-review-p (todo)
   "Return non-nil if TODO needs user review.

@@ -92,25 +92,24 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
     (should (eq 'pull-request (org-roam-todo-workflow-name wf)))))
 
 (ert-deftest wf-pr-test-workflow-statuses ()
-  "Test that pull-request workflow has correct statuses."
+  "Test that pull-request workflow has correct statuses (simplified 4-stage)."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
     (should wf)
-    (should (equal '("draft" "active" "ci" "ready" "review" "done")
+    (should (equal '("draft" "active" "review" "done")
                    (org-roam-todo-workflow-statuses wf)))))
 
 (ert-deftest wf-pr-test-workflow-allows-backward ()
-  "Test that pull-request workflow allows regressing from ci and ready."
+  "Test that pull-request workflow allows regressing from review."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
     (should wf)
     (let ((config (org-roam-todo-workflow-config wf)))
-      (should (member 'ci (plist-get config :allow-backward)))
-      (should (member 'ready (plist-get config :allow-backward))))))
+      (should (member 'review (plist-get config :allow-backward))))))
 
 ;;; ============================================================
 ;;; Hook Registration Tests
@@ -125,32 +124,23 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
          (hooks (org-roam-todo-workflow-hooks wf)))
     (should (assq :on-enter-active hooks))))
 
-(ert-deftest wf-pr-test-has-validate-ci-hook ()
-  "Test that pull-request workflow has :validate-ci hooks."
+(ert-deftest wf-pr-test-has-validate-review-hook ()
+  "Test that pull-request workflow has :validate-review hooks."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
          (hooks (org-roam-todo-workflow-hooks wf)))
-    (should (assq :validate-ci hooks))))
+    (should (assq :validate-review hooks))))
 
-(ert-deftest wf-pr-test-has-enter-ci-hook ()
-  "Test that pull-request workflow has :on-enter-ci hooks."
+(ert-deftest wf-pr-test-has-enter-review-hook ()
+  "Test that pull-request workflow has :on-enter-review hooks."
   :tags '(:unit :wf :pr)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
          (hooks (org-roam-todo-workflow-hooks wf)))
-    (should (assq :on-enter-ci hooks))))
-
-(ert-deftest wf-pr-test-has-enter-ready-hook ()
-  "Test that pull-request workflow has :on-enter-ready hooks."
-  :tags '(:unit :wf :pr)
-  (org-roam-todo-wf-test--require-wf)
-  (require 'org-roam-todo-wf-pr nil t)
-  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
-         (hooks (org-roam-todo-workflow-hooks wf)))
-    (should (assq :on-enter-ready hooks))))
+    (should (assq :on-enter-review hooks))))
 
 (ert-deftest wf-pr-test-has-enter-done-hook ()
   "Test that pull-request workflow has :on-enter-done hooks."
@@ -166,40 +156,30 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
 ;;; ============================================================
 
 (ert-deftest wf-pr-test-valid-forward-transitions ()
-  "Test valid forward transitions in pull-request workflow."
+  "Test valid forward transitions in pull-request workflow (simplified)."
   :tags '(:unit :wf :pr :transitions)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
     (should (org-roam-todo-wf--valid-transition-p wf "draft" "active"))
-    (should (org-roam-todo-wf--valid-transition-p wf "active" "ci"))
-    (should (org-roam-todo-wf--valid-transition-p wf "ci" "ready"))
-    (should (org-roam-todo-wf--valid-transition-p wf "ready" "review"))
+    (should (org-roam-todo-wf--valid-transition-p wf "active" "review"))
     (should (org-roam-todo-wf--valid-transition-p wf "review" "done"))))
 
-(ert-deftest wf-pr-test-backward-from-ci ()
-  "Test backward transition from ci to active is allowed."
+(ert-deftest wf-pr-test-backward-from-review ()
+  "Test backward transition from review to active is allowed."
   :tags '(:unit :wf :pr :transitions)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
-    (should (org-roam-todo-wf--valid-transition-p wf "ci" "active"))))
+    (should (org-roam-todo-wf--valid-transition-p wf "review" "active"))))
 
-(ert-deftest wf-pr-test-backward-from-ready ()
-  "Test backward transition from ready to ci is allowed."
+(ert-deftest wf-pr-test-backward-from-done-not-allowed ()
+  "Test backward transition from done is NOT allowed."
   :tags '(:unit :wf :pr :transitions)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
-    (should (org-roam-todo-wf--valid-transition-p wf "ready" "ci"))))
-
-(ert-deftest wf-pr-test-backward-from-review-not-allowed ()
-  "Test backward transition from review is NOT allowed."
-  :tags '(:unit :wf :pr :transitions)
-  (org-roam-todo-wf-test--require-wf)
-  (require 'org-roam-todo-wf-pr nil t)
-  (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
-    (should-not (org-roam-todo-wf--valid-transition-p wf "review" "ready"))))
+    (should-not (org-roam-todo-wf--valid-transition-p wf "done" "review"))))
 
 (ert-deftest wf-pr-test-rejected-always-available ()
   "Test that rejected is always available from any status."
@@ -209,8 +189,6 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
   (let ((wf (gethash 'pull-request org-roam-todo-wf--registry)))
     (should (org-roam-todo-wf--valid-transition-p wf "draft" "rejected"))
     (should (org-roam-todo-wf--valid-transition-p wf "active" "rejected"))
-    (should (org-roam-todo-wf--valid-transition-p wf "ci" "rejected"))
-    (should (org-roam-todo-wf--valid-transition-p wf "ready" "rejected"))
     (should (org-roam-todo-wf--valid-transition-p wf "review" "rejected"))))
 
 ;;; ============================================================
@@ -771,14 +749,8 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
             (should (eq (car result) :pending))))
       (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
 
-(ert-deftest wf-pr-test-has-validate-ready-hook ()
-  "Test that pull-request workflow has :validate-ready hook."
-  :tags '(:unit :wf :pr)
-  (org-roam-todo-wf-test--require-wf)
-  (require 'org-roam-todo-wf-pr nil t)
-  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
-         (hooks (org-roam-todo-workflow-hooks wf)))
-    (should (assq :validate-ready hooks))))
+;; NOTE: wf-pr-test-has-validate-ready-hook removed - :validate-ready no longer exists
+;; Validations were consolidated into :validate-review in the 4-stage workflow
 
 ;;; ============================================================
 ;;; require-user-approval Tests
@@ -790,6 +762,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
   (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-wf-actions nil t)
   (let* ((event (make-org-roam-todo-event
                  :todo (list :file "/tmp/test-todo.org"))))
     (mocker-let
@@ -797,17 +770,18 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
            ((:input-matcher (lambda (e p) (string= p "APPROVED"))
              :output t))))
       ;; Should not error when approved
-      (should-not (org-roam-todo-wf-pr--require-user-approval event)))))
+      (should-not (org-roam-todo-wf--require-user-approval event)))))
 
 (ert-deftest wf-pr-test-require-user-approval-not-approved ()
   "Test require-user-approval fails when :approved is not set."
   :tags '(:unit :wf :pr :validation)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-wf-actions nil t)
   (let* ((event (make-org-roam-todo-event
                  :todo (list :worktree-path "/tmp/test-repo"))))
     ;; Should error when not approved
-    (should-error (org-roam-todo-wf-pr--require-user-approval event)
+    (should-error (org-roam-todo-wf--require-user-approval event)
                   :type 'user-error)))
 
 (ert-deftest wf-pr-test-require-user-approval-nil ()
@@ -815,21 +789,13 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
   :tags '(:unit :wf :pr :validation)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
+  (require 'org-roam-todo-wf-actions nil t)
   (let* ((event (make-org-roam-todo-event
                  :todo (list :worktree-path "/tmp/test-repo"
                              :approved nil))))
     ;; Should error when explicitly nil
-    (should-error (org-roam-todo-wf-pr--require-user-approval event)
+    (should-error (org-roam-todo-wf--require-user-approval event)
                   :type 'user-error)))
-
-(ert-deftest wf-pr-test-has-validate-review-hook ()
-  "Test that pull-request workflow has :validate-review hook."
-  :tags '(:unit :wf :pr)
-  (org-roam-todo-wf-test--require-wf)
-  (require 'org-roam-todo-wf-pr nil t)
-  (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
-         (hooks (org-roam-todo-workflow-hooks wf)))
-    (should (assq :validate-review hooks))))
 
 ;;; ============================================================
 ;;; require-pr-merged Tests
@@ -919,43 +885,46 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
 ;;; User Approval Detection Tests (org-roam-todo-status)
 ;;; ============================================================
 
-(ert-deftest wf-pr-test-has-user-approval-validation-ready-status ()
-  "Test that ready status in PR workflow triggers user approval detection.
-When a TODO is in 'ready' status, the next status (review) has the
+(ert-deftest wf-pr-test-has-user-approval-validation-active-status ()
+  "Test that active status in PR workflow triggers user approval detection.
+When a TODO is in 'active' status, the next status (review) has the
 user-approval validation, so `org-roam-todo-status--has-user-approval-validation-p'
 should return non-nil."
   :tags '(:unit :wf :pr :status)
   (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-status)
   (require 'org-roam-todo-wf-pr nil t)
   (require 'org-roam-todo-status nil t)
   (let* ((todo (list :file "/tmp/test-todo.org"
-                     :status "ready"
+                     :status "active"
                      :project-name nil)))
-    ;; The next status after "ready" is "review", which has require-user-approval
+    ;; The next status after "active" is "review", which has require-user-approval
     (should (org-roam-todo-status--has-user-approval-validation-p todo))))
 
-(ert-deftest wf-pr-test-has-user-approval-validation-ci-status ()
-  "Test that ci status does NOT trigger user approval detection.
-When a TODO is in 'ci' status, the next status (ready) does NOT have
+(ert-deftest wf-pr-test-has-user-approval-validation-draft-status ()
+  "Test that draft status does NOT trigger user approval detection.
+When a TODO is in 'draft' status, the next status (active) does NOT have
 the user-approval validation."
   :tags '(:unit :wf :pr :status)
   (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-status)
   (require 'org-roam-todo-wf-pr nil t)
   (require 'org-roam-todo-status nil t)
   (let* ((todo (list :file "/tmp/test-todo.org"
-                     :status "ci"
+                     :status "draft"
                      :project-name nil)))
-    ;; The next status after "ci" is "ready", which does NOT have require-user-approval
+    ;; The next status after "draft" is "active", which does NOT have require-user-approval
     (should-not (org-roam-todo-status--has-user-approval-validation-p todo))))
 
 (ert-deftest wf-pr-test-needs-review-when-not-approved ()
-  "Test needs-review-p returns t when at ready status and not approved."
+  "Test needs-review-p returns t when at active status and not approved."
   :tags '(:unit :wf :pr :status)
   (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-status)
   (require 'org-roam-todo-wf-pr nil t)
   (require 'org-roam-todo-status nil t)
   (let* ((todo (list :file "/tmp/test-todo.org"
-                     :status "ready"
+                     :status "active"
                      :project-name nil
                      :approved nil)))
     (should (org-roam-todo-status--needs-review-p todo))))
@@ -964,10 +933,11 @@ the user-approval validation."
   "Test needs-review-p returns nil when already approved."
   :tags '(:unit :wf :pr :status)
   (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-status)
   (require 'org-roam-todo-wf-pr nil t)
   (require 'org-roam-todo-status nil t)
   (let* ((todo (list :file "/tmp/test-todo.org"
-                     :status "ready"
+                     :status "active"
                      :project-name nil
                      :approved "t")))
     (should-not (org-roam-todo-status--needs-review-p todo))))
@@ -979,10 +949,10 @@ the user-approval validation."
   (require 'org-roam-todo-wf-pr nil t)
   (require 'org-roam-todo-status nil t)
   (let* ((todo (list :file "/tmp/test-todo.org"
-                     :status "ci"
+                     :status "draft"
                      :project-name nil
                      :approved nil)))
-    ;; Even though not approved, ci->ready doesn't require user approval
+    ;; Even though not approved, draft->active doesn't require user approval
     (should-not (org-roam-todo-status--needs-review-p todo))))
 
 
@@ -1240,16 +1210,19 @@ the user-approval validation."
       (delete-directory temp-dir t)
       (delete-file temp-todo))))
 
-(ert-deftest wf-pr-test-validate-ci-includes-pr-sections ()
-  "Test that :validate-ci hook includes PR sections validation."
+(ert-deftest wf-pr-test-validate-review-includes-pr-sections ()
+  "Test that :validate-review hook includes PR sections validation.
+In the simplified 4-stage workflow, all validations are in :validate-review."
   :tags '(:unit :wf :pr :validation)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
   (let* ((wf (gethash 'pull-request org-roam-todo-wf--registry))
          (hooks (org-roam-todo-workflow-hooks wf))
-         (validate-ci-hooks (cdr (assq :validate-ci hooks))))
-    (should validate-ci-hooks)
-    (should (member 'org-roam-todo-wf-pr--require-pr-sections validate-ci-hooks))))
+         (validate-review-hooks (cdr (assq :validate-review hooks))))
+    (should validate-review-hooks)
+    ;; Hooks are now priority cons cells (priority . function)
+    (should (cl-find 'org-roam-todo-wf-pr--require-pr-sections validate-review-hooks
+                     :key (lambda (h) (if (consp h) (cdr h) h))))))
 
 ;;; ============================================================
 ;;; PR Info Detection Tests (gh CLI fallback)

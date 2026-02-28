@@ -662,9 +662,73 @@ Rebases onto target, pushes the branch, and creates a draft PR."
   (org-roam-todo-wf-pr--create-draft-pr event))
 
 (defun org-roam-todo-wf-pr--on-enter-review (event)
-  "Actions when entering review status.
+  "Actions when entering review status (legacy).
 Requests configured reviewers."
   (org-roam-todo-wf-pr--request-reviewers event))
+
+(defun org-roam-todo-wf-pr--on-enter-review-full (event)
+  "Full actions when entering review status in simplified workflow.
+Performs all steps: rebase, push, create PR (ready, not draft), and request reviewers."
+  ;; First rebase onto target
+  (org-roam-todo-wf--rebase-onto-target event)
+  ;; Push the branch
+  (org-roam-todo-wf--push-branch event)
+  ;; Create a ready PR (not draft) since we've already done our validations
+  (org-roam-todo-wf-pr--create-ready-pr event)
+  ;; Request reviewers
+  (org-roam-todo-wf-pr--request-reviewers event))
+
+(defun org-roam-todo-wf-pr--create-ready-pr (event)
+  "Create a ready (non-draft) PR for the TODO.
+EVENT is the workflow event context.
+Uses forge to create a PR that's immediately ready for review."
+  (let* ((workflow (org-roam-todo-event-workflow event))
+         (todo-file (org-roam-todo--resolve-file event))
+         (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
+         (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
+         (title (org-roam-todo-wf-pr--get-pr-title event))
+         (body (org-roam-todo-wf-pr--get-pr-body event))
+         (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
+         (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
+         (default-directory worktree-path)
+         (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
+         (repo-type (org-roam-todo-wf-pr--repo-type repo)))
+    (let ((org-roam-todo-wf-pr--current-repo repo))
+      (org-roam-todo-wf-pr--create-pr
+       repo-type
+       title body target branch
+       nil  ; draft-p = nil for ready PR
+       (lambda (data &rest _)
+         (let ((pr-number (or (alist-get 'number data)
+                              (alist-get 'iid data))))
+           (when (and pr-number todo-file)
+             (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
+             (message "PR #%s created for %s" pr-number title)))
+         (forge--pull repo))
+       (lambda (&rest args)
+         (message "Failed to create PR: %S" args))))))
+
+(defun org-roam-todo-wf-pr--check-review-status (todo)
+  "Check overall review status for TODO.
+Returns \\='success if PR is merged, \\='failure if CI failed or PR closed,
+\\='pending otherwise.
+Used by watchers to poll status and trigger auto-advancement."
+  (let ((worktree-path (plist-get todo :worktree-path)))
+    (if worktree-path
+        (condition-case nil
+            (let* ((pr-state (org-roam-todo-wf-pr--get-pr-state worktree-path))
+                   (ci-status (org-roam-todo-wf-pr--check-ci-status todo)))
+              (cond
+               ;; PR merged = success
+               ((eq pr-state 'merged) 'success)
+               ;; PR closed without merge = failure
+               ((eq pr-state 'rejected) 'failure)
+               ;; CI failed = failure (regress to fix)
+               ((eq ci-status 'failure) 'failure)
+               ;; Otherwise still pending
+               (t 'pending)))
+          (error 'pending))
+      'pending)))
 
 ;;; ============================================================
 ;;; Workflow Definition
@@ -678,13 +742,12 @@ via Pull Requests.  Uses the forge package to interact with GitHub,
 GitLab, and other supported forges.
 
 Lifecycle:
-  draft -> active -> ci -> ready -> review -> done
+  draft -> active -> review -> done
 
 - draft: TODO exists, no work started
 - active: Worktree created, work in progress
-- ci: Draft PR created, waiting for CI checks
-- ready: CI passed, ready for your review
-- review: PR submitted for external review
+- review: PR created, awaiting CI and/or reviewer feedback
+  - Automatically regresses to active if ANY changes are made
 - done: PR merged, cleaned up
 
 'rejected' is always available to abandon the TODO.
@@ -693,88 +756,68 @@ Requirements:
 - The repository must be tracked by forge (run `forge-add-repository')
 - The forge package must be configured with API access"
 
-  :statuses '("draft" "active" "ci" "ready" "review" "done")
+  :statuses '("draft" "active" "review" "done")
 
   :hooks
   '(;; Validation before active: ensure rebase target exists
-    (:validate-active . (org-roam-todo-wf--require-rebase-target-exists))
+    (:validate-active . ((10 . org-roam-todo-wf--require-rebase-target-exists)))
 
     ;; When entering active: set up branch and create worktree
     (:on-enter-active . (org-roam-todo-wf--ensure-branch
                          org-roam-todo-wf--ensure-worktree))
 
-    ;; Validation before CI: ensure clean state with commits on branch
-    ;; Also validate PR sections exist if required
-    (:validate-ci . (org-roam-todo-wf--require-clean-worktree
-                     org-roam-todo-wf--require-branch-has-commits
-                     org-roam-todo-wf-pr--require-pr-sections))
+    ;; Validation before review: all the important checks
+    ;; Priority: lower numbers run first (fast/important checks first)
+    (:validate-review . (;; Fast checks first (priority 10-19)
+                         (10 . org-roam-todo-wf--require-clean-worktree)
+                         (11 . org-roam-todo-wf--require-branch-has-commits)
+                         (12 . org-roam-todo-wf-pr--require-pr-sections)
+                         ;; Medium priority (20-29)
+                         (20 . org-roam-todo-wf--require-acceptance-complete)
+                         ;; Slow/external checks (30-39)
+                         (30 . org-roam-todo-wf-pr--require-ci-pass)
+                         ;; User approval last (40+)
+                         (40 . org-roam-todo-wf--require-user-approval)))
 
-    ;; When entering CI: rebase, push, create draft PR
-    (:on-enter-ci . (org-roam-todo-wf-pr--on-enter-ci))
-
-    ;; Validation before ready: CI passes and all criteria complete
-    (:validate-ready . (org-roam-todo-wf--require-acceptance-complete
-                        org-roam-todo-wf-pr--require-ci-pass))
-
-    ;; When entering ready: mark PR ready for review
-    (:on-enter-ready . (org-roam-todo-wf-pr--mark-pr-ready))
-    ;; Validation before review: user must approve their own changes
-    (:validate-review . (org-roam-todo-wf--require-user-approval))
-
-    ;; When entering review: request reviewers
-    (:on-enter-review . (org-roam-todo-wf-pr--on-enter-review))
+    ;; When entering review: rebase, push, create PR, mark ready, request reviewers
+    (:on-enter-review . (org-roam-todo-wf-pr--on-enter-review-full))
 
     ;; Validation before done: PR must be merged, and only humans can approve
-    (:validate-done . (org-roam-todo-wf-pr--require-pr-merged
-                       org-roam-todo-wf--only-human))
+    (:validate-done . ((10 . org-roam-todo-wf-pr--require-pr-merged)
+                       (20 . org-roam-todo-wf--only-human)))
 
     ;; When entering done: cleanup everything (agent, buffers, worktree)
     (:on-enter-done . (org-roam-todo-wf--cleanup-all)))
 
   :config
   '(:rebase-target "origin/main"
-    :draft-pr t
+    :draft-pr nil                    ; create ready PR directly now
     :reviewers nil                   ; set per-project
     :labels nil                      ; set per-project
-    :allow-backward (ci ready)       ; can regress for fixes
+    :allow-backward (review)         ; can regress from review for fixes
 
     ;; Auto-upgrade configuration for async validation monitoring
     :auto-upgrade
-    (("ci" . (:on-pass "ready"       ; advance when CI passes
-              :on-fail "active"       ; regress when CI fails
-              :poll-interval 60       ; check every 60 seconds
-              :timeout 3600           ; stop after 1 hour
-              :feedback nil))         ; no feedback capture
-
-     ("ready" . (:on-pass "review"   ; advance when user approves
-                 :on-fail "active"    ; regress if user rejects
-                 :feedback t))        ; capture feedback on rejection
-
-     ("review" . (:on-pass "done"    ; advance when PR merged
-                  :on-fail "active"   ; regress if PR closed
+    (("review" . (:on-pass "done"    ; advance when PR merged
+                  :on-fail "active"   ; regress if PR closed or changes made
+                  :poll-interval 60   ; check every 60 seconds
+                  :timeout 86400      ; stop after 24 hours
                   :feedback t)))      ; capture feedback from PR review
 
     ;; Watchers for async status monitoring
     :watchers
-    (;; When in "ci" status, poll for CI completion
-     (:status "ci"
-      :poll-fn org-roam-todo-wf-pr--check-ci-status
-      :interval 60                    ; check every minute
-      :on-success (:advance "ready")  ; auto-advance when CI passes
-      :on-failure (:regress "active") ; regress on failure for fixes
-      :timeout 3600)                  ; stop polling after 1 hour
-
-     ;; When in "ci" status, watch for buffer changes (needs more work)
-     (:status "ci"
+    (;; When in "review" status, watch for buffer changes (needs more work)
+     (:status "review"
       :type buffer-change
       :on-change (:regress "active")) ; regress if files are modified
 
-     ;; When in "review" status, poll for PR merge
+     ;; When in "review" status, poll for CI completion and PR merge
      (:status "review"
-      :poll-fn org-roam-todo-wf-pr--check-pr-merged
-      :interval 120                   ; check every 2 minutes
+      :poll-fn org-roam-todo-wf-pr--check-review-status
+      :interval 60                    ; check every minute
       :on-success (:advance "done")   ; auto-advance when merged
-      :timeout 86400))))
+      :on-failure (:regress "active") ; regress on CI failure
+      :timeout 86400))))              ; stop polling after 24 hours
 
 (provide 'org-roam-todo-wf-pr)
 ;;; org-roam-todo-wf-pr.el ends here

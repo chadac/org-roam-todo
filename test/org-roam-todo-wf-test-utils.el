@@ -532,7 +532,17 @@ CLEAN-P  - whether the worktree is clean (no uncommitted changes)"
 (defun org-roam-todo-wf-test--require-wf ()
   "Skip test if org-roam-todo-wf is not loaded."
   (unless (featurep 'org-roam-todo-wf)
-    (ert-skip "org-roam-todo-wf not loaded")))
+    (ert-skip "org-roam-todo-wf not loaded"))
+  ;; Provide stub for project config function if not loaded
+  (unless (fboundp 'org-roam-todo-project-config-get)
+    (defun org-roam-todo-project-config-get (_project _key)
+      "Stub for org-roam-todo-project-config-get during tests."
+      nil)))
+
+(defun org-roam-todo-wf-test--require-status ()
+  "Skip test if org-roam-todo-status is not loaded."
+  (unless (featurep 'org-roam-todo-status)
+    (ert-skip "org-roam-todo-status not loaded")))
 
 ;;; ============================================================
 ;;; Always Helper (for mocker)
