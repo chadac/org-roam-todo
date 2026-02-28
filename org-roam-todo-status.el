@@ -163,9 +163,9 @@
     (org-roam-todo-wf-pr--require-ci-pass
      :name "CI checks pass"
      :target :pr-url)
-    (org-roam-todo-wf-pr--require-user-approval
+    (org-roam-todo-wf--require-user-approval
      :name "User approval"
-     :target :pr-url)
+     :target nil)
     (org-roam-todo-wf-pr--require-pr-merged
      :name "PR merged"
      :target :pr-url)
@@ -411,7 +411,7 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
 (defun org-roam-todo-status--has-user-approval-validation-p (todo)
   "Return non-nil if the next status for TODO requires user approval.
 This checks if the validation hooks for the next status include
-`org-roam-todo-wf-pr--require-user-approval'."
+`org-roam-todo-wf--require-user-approval'."
   (let* ((workflow (org-roam-todo-wf--get-workflow todo))
          (statuses (org-roam-todo-workflow-statuses workflow))
          (status (plist-get todo :status))
@@ -422,7 +422,7 @@ This checks if the validation hooks for the next status include
       (let* ((hooks (org-roam-todo-workflow-hooks workflow))
              (validate-key (intern (format ":validate-%s" next-status)))
              (fns (cdr (assq validate-key hooks))))
-        (memq 'org-roam-todo-wf-pr--require-user-approval fns)))))
+        (memq 'org-roam-todo-wf--require-user-approval fns)))))
 
 (defun org-roam-todo-status--needs-review-p (todo)
   "Return non-nil if TODO needs user review.

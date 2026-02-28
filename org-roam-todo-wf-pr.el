@@ -346,15 +346,8 @@ Reads WORKTREE_PATH fresh from file."
       ;; magit-forge-ci not available - always pass
       nil)))
 
-(defun org-roam-todo-wf-pr--require-user-approval (event)
-  "Validate: user has approved the PR for external review.
-EVENT is the workflow event context.
-Checks for APPROVED property in the TODO.  This is a local approval
-indicating you've reviewed your own changes before requesting external review.
-Reads APPROVED fresh from file."
-  (let ((approved (org-roam-todo-prop event "APPROVED")))
-    (unless approved
-      (user-error "Not approved for review.  Set :APPROVED: t in the TODO after reviewing your changes"))))
+;; Use shared require-user-approval from org-roam-todo-wf-actions
+;; org-roam-todo-wf--require-user-approval is defined there
 
 (defun org-roam-todo-wf-pr--require-pr-merged (event)
   "Validate: PR has been merged.
@@ -454,7 +447,7 @@ Requirements:
 
     ;; Validation before review: user must approve their own changes
     ;; Also: only AI agents (CI automation) can advance to review
-    (:validate-review . (org-roam-todo-wf-pr--require-user-approval
+    (:validate-review . (org-roam-todo-wf--require-user-approval
                          org-roam-todo-wf--only-ai))
 
     ;; When entering review: request reviewers

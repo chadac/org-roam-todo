@@ -39,13 +39,8 @@ EVENT is the workflow event context."
   (let ((file (plist-get (org-roam-todo-event-todo event) :file)))
     (org-roam-todo-wf-tools--set-property file "NEEDS_REVIEW" "t")))
 
-(defun org-roam-todo-wf-local--require-user-approval (event)
-  "Validate: user has approved the changes for merge.
-EVENT is the workflow event context.
-Checks for APPROVED property in the TODO."
-  (let ((approved (org-roam-todo-prop event "APPROVED")))
-    (unless approved
-      (user-error "Not approved for merge. Use 'v a' to approve after reviewing changes"))))
+;; Use shared require-user-approval from org-roam-todo-wf-actions
+;; org-roam-todo-wf--require-user-approval is defined there
 
 (defun org-roam-todo-wf-local--open-magit-review (event)
   "Open magit diff to review changes against target branch.
@@ -119,7 +114,7 @@ Lifecycle:
                          org-roam-todo-wf-local--open-magit-review))
 
     ;; Validation before done: user approval and ff-merge requirements
-    (:validate-done . (org-roam-todo-wf-local--require-user-approval
+    (:validate-done . (org-roam-todo-wf--require-user-approval
                        org-roam-todo-wf--require-target-clean
                        org-roam-todo-wf--require-ff-possible))
 

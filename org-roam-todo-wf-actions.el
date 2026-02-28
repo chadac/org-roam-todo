@@ -16,6 +16,7 @@
 ;;   - org-roam-todo-wf--require-target-clean
 ;;   - org-roam-todo-wf--require-ff-possible
 ;;   - org-roam-todo-wf--require-acceptance-complete
+;;   - org-roam-todo-wf--require-user-approval
 ;;
 ;; Action Hooks (for :on-enter-STATUS, :on-exit-STATUS):
 ;;   - org-roam-todo-wf--ensure-branch (creates branch, fetches upstream)
@@ -302,6 +303,15 @@ Uses `org-roam-todo-all-criteria-complete-p' to check the TODO file."
                                          (plist-get c :text)))
                                incomplete
                                "\n"))))))
+
+(defun org-roam-todo-wf--require-user-approval (event)
+  "Validate: user has approved the changes.
+EVENT is the workflow event context.
+Checks for APPROVED property in the TODO.
+This is used by both local-ff and pull-request workflows."
+  (let ((approved (org-roam-todo-prop event "APPROVED")))
+    (unless approved
+      (user-error "Not approved. Use 'v a' to approve after reviewing changes"))))
 
 ;;; ============================================================
 ;;; Git Worktree Actions
