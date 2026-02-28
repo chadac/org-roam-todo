@@ -512,15 +512,9 @@ the user hasn't already approved (APPROVED property is not set)."
 
 (defun org-roam-todo-status-advance ()
   "Advance TODO to the next status.
-If the TODO requires user approval for the next status, this will
-automatically approve and advance, acting as a shortcut for `v a'."
+If the TODO requires user approval, use 'v a' to approve first."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
-    ;; If awaiting review (user approval required), auto-approve first
-    (when (org-roam-todo-status--needs-review-p todo)
-      (let ((file (plist-get todo :file)))
-        (require 'org-roam-todo-wf-tools)
-        (org-roam-todo-wf-tools--set-property file "APPROVED" "t")))
     (let ((result (org-roam-todo-do-advance todo)))
       (org-roam-todo-status-refresh)
       (message "Advanced: %s → %s" (cdr result) (car result)))))
@@ -588,8 +582,8 @@ Use `v a' to approve or `v r' to reject from the status buffer."
       (magit-log-other (list (format "%s..HEAD" target-branch)) '("--patch")))))
 
 (defun org-roam-todo-status-review-approve ()
-  "Approve the TODO for external review.
-Sets APPROVED property and advances to the next status.
+  "Approve the TODO for review.
+Sets APPROVED property. Use 'a' to advance after approving.
 Only available when the next status requires user approval validation."
   (interactive)
   (unless org-roam-todo-status--todo
@@ -601,10 +595,8 @@ Only available when the next status requires user approval validation."
     ;; Set APPROVED property
     (require 'org-roam-todo-wf-tools)
     (org-roam-todo-wf-tools--set-property file "APPROVED" "t")
-    ;; Advance to next status
-    (let ((result (org-roam-todo-do-advance todo)))
-      (org-roam-todo-status-refresh)
-      (message "Approved and advanced: %s → %s" (cdr result) (car result)))))
+    (org-roam-todo-status-refresh)
+    (message "Approved. Use 'a' to advance to next status.")))
 
 (defun org-roam-todo-status-review-reject ()
   "Reject the TODO and regress to the previous status for more work.
