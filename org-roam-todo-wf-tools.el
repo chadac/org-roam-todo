@@ -337,7 +337,8 @@ Returns the agent buffer name."
   (if (fboundp 'claude-agent-run)
       (let* ((file (plist-get todo :file))
              (model (or (plist-get todo :worktree-model) "sonnet"))
-             (buf (claude-agent-run worktree-path nil nil nil model))
+             (allowed-tools (org-roam-todo-effective-agent-allowed-tools))
+             (buf (claude-agent-run worktree-path nil nil nil model allowed-tools))
              (buffer-name (buffer-name buf)))
         ;; Store agent buffer reference in TODO
         (org-roam-todo-wf-tools--set-property file "AGENT_BUFFER" buffer-name)

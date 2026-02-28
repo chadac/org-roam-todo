@@ -464,6 +464,86 @@ Test task description.
           (should (string= file (plist-get resolved :file)))))
     (org-roam-todo-wf-tools-test--cleanup)))
 
+;;; ============================================================
+;;; spawn-agent Tests
+;;; ============================================================
+
+(ert-deftest wf-tools-test-spawn-agent-passes-allowed-tools ()
+  "Test that spawn-agent passes allowed-tools to claude-agent-run."
+  :tags '(:unit :wf :tools)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-tools nil t)
+  (require 'org-roam-todo-core nil t)
+  (unwind-protect
+      (let* ((test-data (org-roam-todo-wf-tools-test--create-temp-todo
+                         '(:status "active"
+                           :title "Agent Test"
+                           :worktree-path "/tmp/test-worktree"
+                           :worktree-model "sonnet")))
+             (todo (plist-get test-data :todo))
+             (captured-allowed-tools nil)
+             (mock-buffer (generate-new-buffer "*test-agent*")))
+        (mocker-let
+            ((claude-agent-run (work-dir &optional resume continue slug model allowed-tools)
+               ((:input-matcher
+                 (lambda (wd &rest args)
+                   ;; Capture the allowed-tools argument (6th arg, index 5)
+                   (setq captured-allowed-tools (nth 4 args))
+                   t)
+                 :output mock-buffer)))
+             (org-roam-todo-wf-tools--set-property (file prop val)
+               ((:input-matcher #'always :output nil)))
+             (org-roam-todo-wf-tools--send-task-to-agent (buf todo)
+               ((:input-matcher #'always :output nil))))
+          (org-roam-todo-wf-tools--spawn-agent "/tmp/test-worktree" todo)
+          ;; Verify allowed-tools was passed and is non-nil
+          (should captured-allowed-tools)
+          ;; Verify it contains expected tools from org-roam-todo-effective-agent-allowed-tools
+          (should (listp captured-allowed-tools))
+          (should (member "Read(**)" captured-allowed-tools))
+          (should (member "Grep(**)" captured-allowed-tools))
+          (should (member "Glob(**)" captured-allowed-tools)))
+        (when (buffer-live-p mock-buffer)
+          (kill-buffer mock-buffer)))
+    (org-roam-todo-wf-tools-test--cleanup)))
+
+(ert-deftest wf-tools-test-spawn-agent-uses-effective-allowed-tools ()
+  "Test that spawn-agent uses org-roam-todo-effective-agent-allowed-tools."
+  :tags '(:unit :wf :tools)
+  (org-roam-todo-wf-test--require-wf)
+  (org-roam-todo-wf-test--require-mocker)
+  (require 'org-roam-todo-wf-tools nil t)
+  (require 'org-roam-todo-core nil t)
+  (unwind-protect
+      (let* ((test-data (org-roam-todo-wf-tools-test--create-temp-todo
+                         '(:status "active"
+                           :title "Effective Tools Test"
+                           :worktree-path "/tmp/test-worktree"
+                           :worktree-model "opus")))
+             (todo (plist-get test-data :todo))
+             (captured-allowed-tools nil)
+             (mock-buffer (generate-new-buffer "*test-agent*"))
+             ;; Add extra tools to verify effective-agent-allowed-tools is used
+             (org-roam-todo-agent-allowed-tools-extra '("CustomTool(**)")))
+        (mocker-let
+            ((claude-agent-run (work-dir &optional resume continue slug model allowed-tools)
+               ((:input-matcher
+                 (lambda (wd &rest args)
+                   (setq captured-allowed-tools (nth 4 args))
+                   t)
+                 :output mock-buffer)))
+             (org-roam-todo-wf-tools--set-property (file prop val)
+               ((:input-matcher #'always :output nil)))
+             (org-roam-todo-wf-tools--send-task-to-agent (buf todo)
+               ((:input-matcher #'always :output nil))))
+          (org-roam-todo-wf-tools--spawn-agent "/tmp/test-worktree" todo)
+          ;; Verify extra tool from org-roam-todo-agent-allowed-tools-extra is included
+          (should captured-allowed-tools)
+          (should (member "CustomTool(**)" captured-allowed-tools)))
+        (when (buffer-live-p mock-buffer)
+          (kill-buffer mock-buffer)))
+    (org-roam-todo-wf-tools-test--cleanup)))
 
 
 (provide 'org-roam-todo-wf-tools-test)
