@@ -474,7 +474,25 @@ Checks for APPROVED property in the TODO.
 This is used by both local-ff and pull-request workflows."
   (let ((approved (org-roam-todo-prop event "APPROVED")))
     (unless approved
-      (user-error "Not approved. Use 'v a' to approve after reviewing changes"))))
+      (user-error "Not approved for merge.
+
+You must review and approve your changes before they can be merged.
+
+HOW TO FIX:
+1. Review your changes:
+   - MCP: mcp__emacs__git_diff to see changes
+   - MCP: mcp__emacs__git_log to see commits
+   - Bash: git diff main..HEAD
+   - Use magit: M-x magit-diff-range (shown automatically on entering review)
+
+2. Approve the changes using one of these methods:
+   - In the status buffer: press 'v a' to approve
+   - Add ':APPROVED: t' to the TODO's property drawer
+   - MCP: Use mcp__emacs__lock_file and mcp__emacs__edit on the TODO file
+
+3. Then advance to merge:
+   - MCP: mcp__emacs__todo_advance
+   - In the status buffer: press 'a' to advance"))))
 
 ;;; ============================================================
 ;;; Git Worktree Actions
