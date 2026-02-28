@@ -627,6 +627,177 @@ Returns :async-started immediately and polls in the background."
       ;; Return immediately - result will come via claude-mcp-async-complete
       :async-started)))
 
+
+;;; ============================================================
+;;; PR Feedback Functions
+;;; ============================================================
+
+(declare-function org-roam-todo-wf-pr-feedback-fetch "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback-summary "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback-invalidate-cache "org-roam-todo-wf-pr-feedback")
+
+(defun org-roam-todo-wf-tools-pr-feedback (&optional todo-id force-refresh)
+  "Get PR feedback summary for TODO-ID.
+If FORCE-REFRESH is non-nil, invalidate cache first.
+Returns a structured summary of CI checks, reviews, and comments."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (worktree-path (and todo (plist-get todo :worktree-path))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless worktree-path
+      (user-error "TODO has no worktree"))
+    (unless (file-directory-p worktree-path)
+      (user-error "Worktree directory not found: %s" worktree-path))
+    
+    (require 'org-roam-todo-wf-pr-feedback)
+    
+    ;; Invalidate cache if requested
+    (when force-refresh
+      (org-roam-todo-wf-pr-feedback-invalidate-cache worktree-path))
+    
+    ;; Fetch feedback and generate summary
+    (let* ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path))
+           (summary (and feedback (org-roam-todo-wf-pr-feedback-summary feedback))))
+      (if feedback
+          (format "PR Feedback for %s:
+
+PR: %s #%d (%s)
+URL: %s
+
+CI Status: %s
+  - Failed: %d
+  - Pending: %d
+  - Passed: %d
+  - Total: %d
+
+Reviews: %s
+  - Review count: %d
+
+Comments:
+  - Total comments: %d
+  - Unresolved: %d
+
+%s"
+                  (plist-get todo :title)
+                  (if (eq (plist-get feedback :forge) :gitlab) "MR" "PR")
+                  (plist-get feedback :pr-number)
+                  (plist-get feedback :pr-state)
+                  (or (plist-get feedback :pr-url) "N/A")
+                  (plist-get summary :ci-status)
+                  (plist-get summary :ci-failed-count)
+                  (plist-get summary :ci-pending-count)
+                  (plist-get summary :ci-success-count)
+                  (plist-get summary :ci-total-count)
+                  (plist-get summary :review-state)
+                  (plist-get summary :review-count)
+                  (plist-get summary :comment-count)
+                  (plist-get summary :unresolved-count)
+                  (if (> (plist-get summary :ci-failed-count) 0)
+                      "Use todo-pr-ci-logs to view failed CI check details."
+                    ""))
+        "No PR/MR found for this branch."))))
+
+(defun org-roam-todo-wf-tools-pr-comments (&optional todo-id include-resolved)
+  "Get PR comments for TODO-ID.
+If INCLUDE-RESOLVED is non-nil, include resolved comments too.
+Returns formatted list of comments with file locations."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (worktree-path (and todo (plist-get todo :worktree-path))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless worktree-path
+      (user-error "TODO has no worktree"))
+    
+    (require 'org-roam-todo-wf-pr-feedback)
+    
+    (let* ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path))
+           (review-comments (or (plist-get feedback :review-comments)
+                                (plist-get feedback :discussions)))
+           (comments (plist-get feedback :comments))
+           (all-comments (append review-comments comments))
+           (filtered (if include-resolved
+                         all-comments
+                       (cl-remove-if (lambda (c) (eq (plist-get c :state) 'resolved))
+                                     all-comments)))
+           (result '()))
+      (if (null filtered)
+          "No comments found."
+        (dolist (comment filtered)
+          (let* ((author (plist-get comment :author))
+                 (body (plist-get comment :body))
+                 (path (plist-get comment :path))
+                 (line (plist-get comment :line))
+                 (state (plist-get comment :state))
+                 (location (if path
+                               (format "%s%s" path (if line (format ":%d" line) ""))
+                             "general")))
+            (push (format "--- %s [%s] at %s ---\n%s\n"
+                          author
+                          (or state "comment")
+                          location
+                          (or body "(no body)"))
+                  result)))
+        (mapconcat #'identity (nreverse result) "\n")))))
+
+(defun org-roam-todo-wf-tools-pr-ci-logs (&optional todo-id check-name)
+  "Get CI check details for TODO-ID.
+If CHECK-NAME is provided, return logs for that specific check.
+Otherwise, return summary of all failed checks with log tails."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (worktree-path (and todo (plist-get todo :worktree-path))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless worktree-path
+      (user-error "TODO has no worktree"))
+    
+    (require 'org-roam-todo-wf-pr-feedback)
+    
+    (let* ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path))
+           (ci-checks (plist-get feedback :ci-checks))
+           (failed-checks (cl-remove-if-not 
+                           (lambda (c) (eq (plist-get c :status) 'failure))
+                           ci-checks)))
+      (cond
+       ;; Specific check requested
+       (check-name
+        (let ((check (cl-find check-name ci-checks 
+                              :key (lambda (c) (plist-get c :name))
+                              :test #'string=)))
+          (if check
+              (format "=== CI Check: %s ===
+Status: %s
+URL: %s
+
+Log tail:
+%s"
+                      (plist-get check :name)
+                      (plist-get check :status)
+                      (or (plist-get check :url) "N/A")
+                      (or (plist-get check :log-tail) "(no logs available)"))
+            (format "Check '%s' not found. Available checks: %s"
+                    check-name
+                    (mapconcat (lambda (c) (plist-get c :name)) ci-checks ", ")))))
+       ;; No failed checks
+       ((null failed-checks)
+        (format "No failed CI checks. Total checks: %d, all passing or pending."
+                (length ci-checks)))
+       ;; Show all failed checks
+       (t
+        (let ((result '()))
+          (dolist (check failed-checks)
+            (push (format "=== %s (FAILED) ===
+URL: %s
+
+Log tail:
+%s
+"
+                          (plist-get check :name)
+                          (or (plist-get check :url) "N/A")
+                          (or (plist-get check :log-tail) "(no logs available)"))
+                  result))
+          (concat (format "Found %d failed CI checks:\n\n" (length failed-checks))
+                  (mapconcat #'identity (nreverse result) "\n"))))))))
+
 ;;; ============================================================
 ;;; MCP Tool Registration
 ;;; ============================================================
@@ -728,7 +899,56 @@ To explicitly clear the waiting state, call with an empty reason."
           :function #'org-roam-todo-wf-tools-wait-for-user
           :safe t
           :needs-session-cwd t
-          :args ((reason string :required "What you are waiting for from the user")))))))
+          :args ((reason string :required "What you are waiting for from the user")))
+
+        ;; PR Feedback tools
+        (claude-mcp-deftool todo-pr-feedback
+          "Get PR/MR feedback summary for the current TODO.
+Returns a summary of CI checks, reviews, and comments for the PR/MR
+associated with this TODO's worktree branch.
+
+Supports both GitHub (gh CLI) and GitLab (glab CLI).
+
+Use this to:
+- Check CI status before advancing
+- See if there are pending reviews
+- Get an overview of feedback on your PR"
+          :function #'org-roam-todo-wf-tools-pr-feedback
+          :safe t
+          :needs-session-cwd t
+          :args ((todo-id string "Optional: TODO file path, title, or ID")
+                 (force-refresh boolean "If true, bypass cache and fetch fresh data")))
+
+        (claude-mcp-deftool todo-pr-comments
+          "Get PR/MR comments for the current TODO.
+Returns a formatted list of review comments and discussions with:
+- Author name
+- File path and line number (for inline comments)
+- Comment body
+- Resolution status
+
+By default only shows unresolved comments. Set include-resolved to true
+to see all comments."
+          :function #'org-roam-todo-wf-tools-pr-comments
+          :safe t
+          :needs-session-cwd t
+          :args ((todo-id string "Optional: TODO file path, title, or ID")
+                 (include-resolved boolean "If true, include resolved comments")))
+
+        (claude-mcp-deftool todo-pr-ci-logs
+          "Get CI check logs for the current TODO.
+If check-name is provided, returns logs for that specific check.
+Otherwise, returns log tails for all failed checks.
+
+Use this to:
+- Diagnose CI failures
+- Understand what went wrong in a build
+- Get error messages and stack traces from failed tests"
+          :function #'org-roam-todo-wf-tools-pr-ci-logs
+          :safe t
+          :needs-session-cwd t
+          :args ((todo-id string "Optional: TODO file path, title, or ID")
+                 (check-name string "Optional: specific check name to view logs for")))))))
 
 (provide 'org-roam-todo-wf-tools)
 ;;; org-roam-todo-wf-tools.el ends here

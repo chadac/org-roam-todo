@@ -38,6 +38,11 @@
 ;; Forward declarations for wf-tools module
 (declare-function org-roam-todo-wf-tools-start "org-roam-todo-wf-tools")
 (declare-function org-roam-todo-wf-tools-delegate "org-roam-todo-wf-tools")
+;; Forward declarations for PR feedback module
+(declare-function org-roam-todo-wf-pr-feedback-fetch "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback-summary "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback-invalidate-cache "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback-view-full-log "org-roam-todo-wf-pr-feedback")
 
 ;;; ============================================================
 ;;; Customization
@@ -132,6 +137,58 @@
   :group 'org-roam-todo-status)
 
 ;;; ============================================================
+;;; PR Feedback Faces
+;;; ============================================================
+
+(defface org-roam-todo-status-ci-success
+  '((((class color) (background dark)) :foreground "#98c379")
+    (((class color) (background light)) :foreground "#28a428"))
+  "Face for successful CI checks."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-ci-failure
+  '((((class color) (background dark)) :foreground "#e06c75")
+    (((class color) (background light)) :foreground "#cc0000"))
+  "Face for failed CI checks."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-ci-pending
+  '((((class color) (background dark)) :foreground "#61afef")
+    (((class color) (background light)) :foreground "#0070cc"))
+  "Face for pending CI checks."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-review-approved
+  '((((class color) (background dark)) :foreground "#98c379")
+    (((class color) (background light)) :foreground "#28a428"))
+  "Face for approved reviews."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-review-changes-requested
+  '((((class color) (background dark)) :foreground "#e06c75")
+    (((class color) (background light)) :foreground "#cc0000"))
+  "Face for reviews requesting changes."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-comment-unresolved
+  '((((class color) (background dark)) :foreground "#e5c07b")
+    (((class color) (background light)) :foreground "#b08000"))
+  "Face for unresolved comments."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-comment-resolved
+  '((((class color) (background dark)) :foreground "#5c6370")
+    (((class color) (background light)) :foreground "#909090"))
+  "Face for resolved comments."
+  :group 'org-roam-todo-status)
+
+(defface org-roam-todo-status-log-tail
+  '((((class color) (background dark)) :foreground "#abb2bf" :background "#282c34")
+    (((class color) (background light)) :foreground "#383a42" :background "#f0f0f0"))
+  "Face for CI log tail display."
+  :group 'org-roam-todo-status)
+
+;;; ============================================================
 ;;; Hook Name Registry
 ;;; ============================================================
 
@@ -218,7 +275,25 @@ TARGET-TYPE can be:
 (defclass org-roam-todo-status-validation-section (magit-section)
   ((result :initform nil :initarg :result)))
 
+;; PR Feedback section classes
+(defclass org-roam-todo-status-pr-feedback-section (magit-section)
+  ((feedback :initform nil :initarg :feedback)))
 
+(defclass org-roam-todo-status-ci-section (magit-section)
+  ((checks :initform nil :initarg :checks)))
+
+(defclass org-roam-todo-status-ci-check-section (magit-section)
+  ((check :initform nil :initarg :check)
+   (worktree-path :initform nil :initarg :worktree-path)))
+
+(defclass org-roam-todo-status-comments-section (magit-section)
+  ((comments :initform nil :initarg :comments)))
+
+(defclass org-roam-todo-status-comment-section (magit-section)
+  ((comment :initform nil :initarg :comment)))
+
+(defclass org-roam-todo-status-reviews-section (magit-section)
+  ((reviews :initform nil :initarg :reviews)))
 
 ;;; ============================================================
 ;;; Validation Runner
@@ -413,6 +488,237 @@ RES-STATUS can be: pass, pending, fail, feedback, or error."
                              (org-roam-todo-status--truncate-message message 60)
                              'font-lock-comment-face))
                     (insert "\n")))))))))))
+
+;;; ============================================================
+;;; PR Feedback Rendering
+;;; ============================================================
+
+(defun org-roam-todo-status--ci-status-display (status)
+  "Return (indicator . face) for CI STATUS symbol."
+  (pcase status
+    ('success (cons "✓" 'org-roam-todo-status-ci-success))
+    ('failure (cons "✗" 'org-roam-todo-status-ci-failure))
+    ('pending (cons "⧗" 'org-roam-todo-status-ci-pending))
+    ('cancelled (cons "⊘" 'font-lock-comment-face))
+    ('skipped (cons "−" 'font-lock-comment-face))
+    (_ (cons "?" 'font-lock-comment-face))))
+
+(defun org-roam-todo-status--insert-ci-check (check worktree-path)
+  "Insert a single CI CHECK item with WORKTREE-PATH for log viewing."
+  (let* ((name (plist-get check :name))
+         (status (plist-get check :status))
+         (log-tail (plist-get check :log-tail))
+         (display (org-roam-todo-status--ci-status-display status))
+         (indicator (car display))
+         (face (cdr display)))
+    (magit-insert-section section (org-roam-todo-status-ci-check-section nil (eq status 'failure))
+      (oset section check check)
+      (oset section worktree-path worktree-path)
+      (insert "  ")
+      (insert (org-roam-todo-status--propertize indicator face))
+      (insert " ")
+      (insert (org-roam-todo-status--propertize (or name "Unknown") face))
+      (insert "\n")
+      ;; Show log tail for failures (collapsed by default, expandable)
+      (when (and log-tail (eq status 'failure))
+        (magit-insert-heading)
+        (insert (org-roam-todo-status--propertize
+                 "    Log tail (press TAB to expand, L for full log):\n"
+                 'font-lock-comment-face))
+        (let ((lines (split-string log-tail "\n" t)))
+          (dolist (line (seq-take lines 10))
+            (insert "    ")
+            (insert (org-roam-todo-status--propertize
+                     (truncate-string-to-width line 70 nil nil "…")
+                     'org-roam-todo-status-log-tail))
+            (insert "\n"))
+          (when (> (length lines) 10)
+            (insert (org-roam-todo-status--propertize
+                     (format "    ... and %d more lines\n" (- (length lines) 10))
+                     'font-lock-comment-face))))))))
+
+(defun org-roam-todo-status--insert-ci-section (feedback worktree-path)
+  "Insert CI checks section from FEEDBACK with WORKTREE-PATH."
+  (let* ((ci-checks (plist-get feedback :ci-checks))
+         (summary (org-roam-todo-wf-pr-feedback-summary feedback))
+         (failed (plist-get summary :ci-failed-count))
+         (pending (plist-get summary :ci-pending-count))
+         (success (plist-get summary :ci-success-count))
+         (total (plist-get summary :ci-total-count)))
+    (when (and ci-checks (> total 0))
+      (magit-insert-section section (org-roam-todo-status-ci-section nil t)
+        (oset section checks ci-checks)
+        (magit-insert-heading
+          (org-roam-todo-status--propertize "CI Checks " 'org-roam-todo-status-section-heading)
+          (cond
+           ((> failed 0)
+            (org-roam-todo-status--propertize
+             (format "(%d/%d failed)" failed total)
+             'org-roam-todo-status-ci-failure))
+           ((> pending 0)
+            (org-roam-todo-status--propertize
+             (format "(%d/%d pending)" pending total)
+             'org-roam-todo-status-ci-pending))
+           (t
+            (org-roam-todo-status--propertize
+             (format "(%d passed)" success)
+             'org-roam-todo-status-ci-success))))
+        ;; Show failed checks first, then pending, then success
+        (let ((sorted-checks (sort (copy-sequence ci-checks)
+                                   (lambda (a b)
+                                     (let ((sa (plist-get a :status))
+                                           (sb (plist-get b :status)))
+                                       (< (pcase sa ('failure 0) ('pending 1) (_ 2))
+                                          (pcase sb ('failure 0) ('pending 1) (_ 2))))))))
+          (dolist (check sorted-checks)
+            (org-roam-todo-status--insert-ci-check check worktree-path)))))))
+
+(defun org-roam-todo-status--insert-comment (comment)
+  "Insert a single COMMENT item."
+  (let* ((author (plist-get comment :author))
+         (body (plist-get comment :body))
+         (path (plist-get comment :path))
+         (line (plist-get comment :line))
+         (state (plist-get comment :state))
+         (face (if (eq state 'resolved)
+                   'org-roam-todo-status-comment-resolved
+                 'org-roam-todo-status-comment-unresolved))
+         (indicator (if (eq state 'resolved) "✓" "○")))
+    (magit-insert-section section (org-roam-todo-status-comment-section)
+      (oset section comment comment)
+      (insert "  ")
+      (insert (org-roam-todo-status--propertize indicator face))
+      (insert " ")
+      (insert (org-roam-todo-status--propertize (or author "unknown") 'font-lock-keyword-face))
+      (when path
+        (insert " on ")
+        (insert (org-roam-todo-status--propertize
+                 (file-name-nondirectory path)
+                 'font-lock-string-face))
+        (when line
+          (insert (format ":%d" line))))
+      (insert "\n")
+      ;; Show first line of comment body
+      (when body
+        (let ((first-line (car (split-string body "\n" t))))
+          (when first-line
+            (insert "    ")
+            (insert (org-roam-todo-status--propertize
+                     (truncate-string-to-width first-line 60 nil nil "…")
+                     'font-lock-comment-face))
+            (insert "\n")))))))
+
+(defun org-roam-todo-status--insert-comments-section (feedback)
+  "Insert comments/reviews section from FEEDBACK."
+  (let* ((review-comments (or (plist-get feedback :review-comments)
+                              (plist-get feedback :discussions)))
+         (comments (plist-get feedback :comments))
+         (summary (org-roam-todo-wf-pr-feedback-summary feedback))
+         (unresolved (plist-get summary :unresolved-count))
+         (total-comments (+ (length review-comments) (length comments))))
+    (when (> total-comments 0)
+      (magit-insert-section section (org-roam-todo-status-comments-section nil t)
+        (oset section comments (append review-comments comments))
+        (magit-insert-heading
+          (org-roam-todo-status--propertize "Comments " 'org-roam-todo-status-section-heading)
+          (if (> unresolved 0)
+              (org-roam-todo-status--propertize
+               (format "(%d unresolved)" unresolved)
+               'org-roam-todo-status-comment-unresolved)
+            (org-roam-todo-status--propertize
+             (format "(%d)" total-comments)
+             'font-lock-comment-face)))
+        ;; Show unresolved review comments first
+        (dolist (comment review-comments)
+          (when (eq (plist-get comment :state) 'unresolved)
+            (org-roam-todo-status--insert-comment comment)))
+        ;; Then regular comments (most recent first, limit to 5)
+        (dolist (comment (seq-take (reverse comments) 5))
+          (org-roam-todo-status--insert-comment comment))))))
+
+(defun org-roam-todo-status--insert-reviews-section (feedback)
+  "Insert review status section from FEEDBACK."
+  (let* ((reviews (plist-get feedback :reviews))
+         (summary (org-roam-todo-wf-pr-feedback-summary feedback))
+         (review-state (plist-get summary :review-state)))
+    (when (and reviews (> (length reviews) 0))
+      (magit-insert-section section (org-roam-todo-status-reviews-section nil t)
+        (oset section reviews reviews)
+        (magit-insert-heading
+          (org-roam-todo-status--propertize "Reviews " 'org-roam-todo-status-section-heading)
+          (pcase review-state
+            (:approved
+             (org-roam-todo-status--propertize "Approved" 'org-roam-todo-status-review-approved))
+            (:changes-requested
+             (org-roam-todo-status--propertize "Changes Requested" 'org-roam-todo-status-review-changes-requested))
+            (:reviewed
+             (org-roam-todo-status--propertize "Reviewed" 'font-lock-comment-face))
+            (_ (org-roam-todo-status--propertize "Pending" 'font-lock-comment-face))))
+        ;; Show individual reviews
+        (dolist (review reviews)
+          (let* ((author (plist-get review :author))
+                 (state (plist-get review :state))
+                 (face (pcase state
+                         ('approved 'org-roam-todo-status-review-approved)
+                         ('changes_requested 'org-roam-todo-status-review-changes-requested)
+                         (_ 'font-lock-comment-face)))
+                 (indicator (pcase state
+                              ('approved "✓")
+                              ('changes_requested "✗")
+                              ('commented "💬")
+                              (_ "○"))))
+            (insert "  ")
+            (insert (org-roam-todo-status--propertize indicator face))
+            (insert " ")
+            (insert (org-roam-todo-status--propertize (or author "unknown") 'font-lock-keyword-face))
+            (insert " - ")
+            (insert (org-roam-todo-status--propertize
+                     (symbol-name (or state 'pending))
+                     face))
+            (insert "\n")))))))
+
+(defun org-roam-todo-status--insert-pr-feedback (todo)
+  "Insert PR feedback section for TODO if applicable."
+  (let* ((worktree-path (plist-get todo :worktree-path))
+         (status (plist-get todo :status)))
+    ;; Only show PR feedback in review status or when worktree exists
+    (when (and worktree-path
+               (file-directory-p worktree-path)
+               (member status '("review" "active")))
+      (condition-case err
+          (progn
+            (require 'org-roam-todo-wf-pr-feedback)
+            (let ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path)))
+              (when feedback
+                (magit-insert-section (org-roam-todo-status-pr-feedback-section nil t)
+                  (oset (magit-current-section) feedback feedback)
+                  (insert "\n")
+                  ;; PR URL header
+                  (let ((pr-url (plist-get feedback :pr-url))
+                        (pr-number (plist-get feedback :pr-number))
+                        (forge (plist-get feedback :forge)))
+                    (when pr-number
+                      (insert (org-roam-todo-status--propertize
+                               (format "%s #%d"
+                                       (if (eq forge :gitlab) "MR" "PR")
+                                       pr-number)
+                               '(:weight bold)))
+                      (when pr-url
+                        (insert " ")
+                        (insert-text-button
+                         "[open]"
+                         'action (lambda (_) (browse-url pr-url))
+                         'help-echo pr-url))
+                      (insert "\n\n")))
+                  ;; Insert subsections
+                  (org-roam-todo-status--insert-ci-section feedback worktree-path)
+                  (org-roam-todo-status--insert-reviews-section feedback)
+                  (org-roam-todo-status--insert-comments-section feedback)))))
+        (error
+         (insert (org-roam-todo-status--propertize
+                  (format "  (PR feedback unavailable: %s)\n" (error-message-string err))
+                  'font-lock-comment-face)))))))
+
 (defun org-roam-todo-status--has-user-approval-validation-p (todo)
   "Return non-nil if the next status for TODO requires user approval.
 This checks if the validation hooks for the next status include
@@ -492,6 +798,8 @@ Returns nil if agent is not waiting for user."
       (org-roam-todo-status--insert-header todo workflow)
       (insert "\n")
       (org-roam-todo-status--insert-validations todo workflow)
+      ;; Show PR feedback section (CI checks, reviews, comments)
+      (org-roam-todo-status--insert-pr-feedback todo)
       ;; Show agent waiting notice if applicable
       (org-roam-todo-status--insert-agent-waiting-notice todo)
       ;; Show review notice if applicable
@@ -519,10 +827,17 @@ Returns nil if agent is not waiting for user."
 ;;; Commands
 ;;; ============================================================
 
-(defun org-roam-todo-status-refresh ()
-  "Refresh the TODO status buffer."
-  (interactive)
+(defun org-roam-todo-status-refresh (&optional force-refresh)
+  "Refresh the TODO status buffer.
+With FORCE-REFRESH (prefix arg), also invalidate PR feedback cache."
+  (interactive "P")
   (when (derived-mode-p 'org-roam-todo-status-mode)
+    ;; Invalidate PR feedback cache if force refresh
+    (when (and force-refresh org-roam-todo-status--todo)
+      (when-let ((worktree-path (plist-get org-roam-todo-status--todo :worktree-path)))
+        (require 'org-roam-todo-wf-pr-feedback nil t)
+        (when (fboundp 'org-roam-todo-wf-pr-feedback-invalidate-cache)
+          (org-roam-todo-wf-pr-feedback-invalidate-cache worktree-path))))
     ;; Re-read TODO from file to get fresh data
     (when-let* ((file (plist-get org-roam-todo-status--todo :file))
                 (fresh-todo (org-roam-todo-status--read-todo-from-file file)))
@@ -737,6 +1052,85 @@ Only available when the next status requires user approval validation."
       (user-error "No worktree found"))))
 
 ;;; ============================================================
+;;; PR Feedback Commands
+;;; ============================================================
+
+(defun org-roam-todo-status-view-ci-log ()
+  "View full CI log for the check at point or select from failed checks."
+  (interactive)
+  (unless org-roam-todo-status--todo
+    (user-error "No TODO in buffer"))
+  (let* ((todo org-roam-todo-status--todo)
+         (worktree-path (plist-get todo :worktree-path))
+         (section (magit-current-section))
+         (check (and (cl-typep section 'org-roam-todo-status-ci-check-section)
+                     (oref section check))))
+    (unless worktree-path
+      (user-error "No worktree found"))
+    (require 'org-roam-todo-wf-pr-feedback)
+    (if check
+        ;; View log for check at point
+        (org-roam-todo-wf-pr-feedback-view-full-log worktree-path
+                                                     (plist-get check :name))
+      ;; Select from available checks
+      (let* ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path))
+             (checks (plist-get feedback :ci-checks))
+             (failed-checks (cl-remove-if-not
+                             (lambda (c) (eq (plist-get c :status) 'failure))
+                             checks)))
+        (if (null failed-checks)
+            (user-error "No failed CI checks")
+          (let* ((names (mapcar (lambda (c) (plist-get c :name)) failed-checks))
+                 (name (completing-read "View log for: " names nil t)))
+            (org-roam-todo-wf-pr-feedback-view-full-log worktree-path name)))))))
+
+(defun org-roam-todo-status-open-pr ()
+  "Open the PR/MR URL in browser."
+  (interactive)
+  (unless org-roam-todo-status--todo
+    (user-error "No TODO in buffer"))
+  (let* ((todo org-roam-todo-status--todo)
+         (worktree-path (plist-get todo :worktree-path)))
+    (unless worktree-path
+      (user-error "No worktree found"))
+    (require 'org-roam-todo-wf-pr-feedback)
+    (let* ((feedback (org-roam-todo-wf-pr-feedback-fetch worktree-path))
+           (pr-url (plist-get feedback :pr-url)))
+      (if pr-url
+          (browse-url pr-url)
+        (user-error "No PR URL found")))))
+
+(defun org-roam-todo-status-visit-comment ()
+  "Visit the file/line for the comment at point."
+  (interactive)
+  (let* ((section (magit-current-section))
+         (comment (and (cl-typep section 'org-roam-todo-status-comment-section)
+                       (oref section comment)))
+         (todo org-roam-todo-status--todo)
+         (worktree-path (plist-get todo :worktree-path)))
+    (unless comment
+      (user-error "No comment at point"))
+    (let ((path (plist-get comment :path))
+          (line (plist-get comment :line))
+          (url (plist-get comment :url)))
+      (cond
+       ;; If we have file path and line, go to that location
+       ((and path worktree-path)
+        (let ((full-path (expand-file-name path worktree-path)))
+          (if (file-exists-p full-path)
+              (progn
+                (find-file full-path)
+                (when line
+                  (goto-char (point-min))
+                  (forward-line (1- line))))
+            (if url
+                (browse-url url)
+              (user-error "File not found: %s" path)))))
+       ;; Otherwise open URL if available
+       (url (browse-url url))
+       (t (user-error "No location info for this comment"))))))
+
+;;; ============================================================
 ;;; Validation Navigation
 ;;; ============================================================
 
@@ -884,8 +1278,13 @@ Priority:
    [("m r" "Fetch & rebase" org-roam-todo-status-git-fetch-rebase)
     ("m p" "Fetch, rebase & push" org-roam-todo-status-git-fetch-rebase-push)
     ("m s" "Git status (magit)" org-roam-todo-status-git-status)]]
+  ["PR Feedback"
+   [("p p" "Open PR in browser" org-roam-todo-status-open-pr)
+    ("p l" "View CI log" org-roam-todo-status-view-ci-log)
+    ("p c" "Visit comment" org-roam-todo-status-visit-comment)]]
   ["Buffer"
    [("g" "Refresh" org-roam-todo-status-refresh)
+    ("G" "Force refresh (clear cache)" (lambda () (interactive) (org-roam-todo-status-refresh t)))
     ("q" "Quit" quit-window)]])
 
 ;;; ============================================================
@@ -898,6 +1297,7 @@ Priority:
     (define-key map (kbd "?") #'org-roam-todo-status-dispatch)
     (define-key map (kbd "RET") #'org-roam-todo-status-visit-validation)
     (define-key map (kbd "g") #'org-roam-todo-status-refresh)
+    (define-key map (kbd "G") (lambda () (interactive) (org-roam-todo-status-refresh t)))
     (define-key map (kbd "a") #'org-roam-todo-status-advance)
     (define-key map (kbd "r") #'org-roam-todo-status-regress)
     (define-key map (kbd "R") #'org-roam-todo-status-reject)
@@ -914,6 +1314,11 @@ Priority:
     (define-key map (kbd "m r") #'org-roam-todo-status-git-fetch-rebase)
     (define-key map (kbd "m p") #'org-roam-todo-status-git-fetch-rebase-push)
     (define-key map (kbd "m s") #'org-roam-todo-status-git-status)
+    ;; PR feedback prefix
+    (define-key map (kbd "p p") #'org-roam-todo-status-open-pr)
+    (define-key map (kbd "p l") #'org-roam-todo-status-view-ci-log)
+    (define-key map (kbd "p c") #'org-roam-todo-status-visit-comment)
+    (define-key map (kbd "L") #'org-roam-todo-status-view-ci-log)  ; Quick access
     map)
   "Keymap for `org-roam-todo-status-mode'.")
 
