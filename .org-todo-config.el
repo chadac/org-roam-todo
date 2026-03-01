@@ -51,10 +51,12 @@ Runs `just check-requires` asynchronously. Results are cached per commit SHA."
 
 ;; Register validations
 (org-roam-todo-project-validations
- ;; Before entering review: run tests and compile
+ ;; Before entering review: run all checks
  :validate-review (org-roam-todo--validate-tests-pass
-                   org-roam-todo--validate-byte-compile)
- ;; Before entering done: also check dependencies
+                   org-roam-todo--validate-byte-compile
+                   org-roam-todo--validate-no-circular-deps
+                   org-roam-todo--validate-all-modules-required)
+ ;; Before entering done: same checks
  :validate-done (org-roam-todo--validate-tests-pass
                  org-roam-todo--validate-byte-compile
                  org-roam-todo--validate-no-circular-deps
