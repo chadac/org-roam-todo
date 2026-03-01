@@ -306,13 +306,18 @@ Returns list of result plists with :hook, :status, :message, :name, :target.
 Status can be: pass, pending, fail, feedback, or error."
   (let* ((hooks (org-roam-todo-workflow-hooks workflow))
          (validate-key (intern (format ":validate-%s" next-status)))
-         (fns (cdr (assq validate-key hooks)))
+         (workflow-fns (cdr (assq validate-key hooks)))
          (event (make-org-roam-todo-event
                  :todo todo
                  :workflow workflow
                  :old-status (plist-get todo :status)
                  :new-status next-status
                  :actor 'human))
+         ;; Also get project-specific validations
+         (project-fns (when (featurep 'org-roam-todo-wf-project)
+                        (when-let ((project-root (plist-get todo :project-root)))
+                          (org-roam-todo-wf-project-get-validations project-root validate-key))))
+         (fns (append workflow-fns project-fns))
          (results '()))
     (dolist (fn fns)
       (let* ((raw-result (condition-case err
