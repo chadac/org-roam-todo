@@ -436,11 +436,11 @@ both a title (the heading text) and body (content under the heading)."
     (let* ((file (org-roam-todo--resolve-file event))
            (pr-node (when file (org-roam-todo-wf-pr--get-pr-node file))))
       (unless pr-node
-        (user-error "Missing PR node. Use mcp__emacs__todo_pr_update to create PR title and description"))
+        (user-error "Missing PR node. Use mcp__emacs__todo_pr_update_meta to create PR title and description"))
       (unless (plist-get pr-node :title)
-        (user-error "PR node has no title. Use mcp__emacs__todo_pr_update to set PR title"))
+        (user-error "PR node has no title. Use mcp__emacs__todo_pr_update_meta to set PR title"))
       (unless (plist-get pr-node :body)
-        (user-error "PR node has no description. Use mcp__emacs__todo_pr_update to set PR description")))))
+        (user-error "PR node has no description. Use mcp__emacs__todo_pr_update_meta to set PR description")))))
 
 ;;; ------------------------------------------------------------
 ;;; PR Workflow Hooks

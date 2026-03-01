@@ -417,12 +417,16 @@ The waiting state is cleared when:
 
 (defun org-roam-todo-wf-tools--spawn-agent (worktree-path todo)
   "Spawn a Claude agent in WORKTREE-PATH for TODO.
-Returns the agent buffer name."
+Returns the agent buffer name.
+Includes workflow-specific tools based on the TODO's workflow type."
   (require 'claude-agent nil t)
   (if (fboundp 'claude-agent-run)
       (let* ((file (plist-get todo :file))
              (model (or (plist-get todo :worktree-model) "sonnet"))
-             (allowed-tools (org-roam-todo-effective-agent-allowed-tools))
+             ;; Determine workflow to get workflow-specific tools
+             (workflow (org-roam-todo-wf--get-workflow todo))
+             (workflow-name (and workflow (org-roam-todo-workflow-name workflow)))
+             (allowed-tools (org-roam-todo-effective-agent-allowed-tools workflow-name))
              (buf (claude-agent-run worktree-path nil nil nil model allowed-tools))
              (buffer-name (buffer-name buf)))
         ;; Store agent buffer reference in TODO
@@ -1032,11 +1036,14 @@ Strips \='Pull Request: \=' prefix from title if present."
         (when (string-empty-p body) (setq body nil))
         (cons title body)))))
 
-(defun org-roam-todo-wf-tools-pr-update (title body &optional todo-id)
-  "Update the TODO's PR file with TITLE and BODY.
+(defun org-roam-todo-wf-tools-pr-update-meta (title body &optional todo-id)
+  "Update the TODO's PR metadata (title and description).
 TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
 Creates a separate PR file (todo-name-pr.org) with the PR content.
-Also adds a link to the PR file in the TODO file."
+Also adds a link to the PR file in the TODO file.
+
+This only updates the local PR metadata file. To push changes to the
+remote forge, use `todo-pr-create-or-update'."
   (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
          (file (and todo (plist-get todo :file))))
     (unless todo
@@ -1051,7 +1058,7 @@ Also adds a link to the PR file in the TODO file."
            (pr-id (org-roam-todo-wf-tools--write-pr-file pr-file title body file)))
       ;; Add link to TODO file
       (org-roam-todo-wf-tools--add-pr-link-to-todo file pr-file pr-id)
-      (format "PR content saved to: %s\nTitle: %s\nDescription: %s\nLink added to TODO file."
+      (format "PR metadata saved to: %s\nTitle: %s\nDescription: %s\nLink added to TODO file.\n\nTo push to the remote, use mcp__emacs__todo_pr_create_or_update."
               pr-file
               title
               (if body
@@ -1063,7 +1070,10 @@ Also adds a link to the PR file in the TODO file."
 (defun org-roam-todo-wf-tools-pr-push (&optional todo-id)
   "Push the PR title and description to the remote forge.
 TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
-Reads the PR node from the TODO file and pushes to GitHub/GitLab."
+Reads the PR node from the TODO file and pushes to GitHub/GitLab.
+
+NOTE: This is an internal function. Prefer using `todo-pr-create-or-update'
+which also pushes the git branch with --force-with-lease."
   (interactive)
   (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
          (file (and todo (plist-get todo :file)))
@@ -1077,7 +1087,7 @@ Reads the PR node from the TODO file and pushes to GitHub/GitLab."
     
     (let ((sections (org-roam-todo-wf-pr-feedback--get-sections file)))
       (unless sections
-        (user-error "No PR node found. Use mcp__emacs__todo_pr_update first"))
+        (user-error "No PR node found. Use mcp__emacs__todo_pr_update_meta first"))
       (let ((title (car sections))
             (body (cdr sections)))
         (unless (and title (not (string-empty-p (string-trim title))))
@@ -1093,6 +1103,64 @@ Reads the PR node from the TODO file and pushes to GitHub/GitLab."
                         (concat (substring body 0 100) "...")
                       body)
                   "(empty)"))))))
+
+(defun org-roam-todo-wf-tools-pr-create-or-update (&optional todo-id)
+  "Push branch and sync PR metadata to the remote forge.
+TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
+
+This function:
+1. Pushes the current branch with --force-with-lease
+2. Syncs the PR title and description from the PR metadata file
+
+Use `todo-pr-update-meta' first to set the PR title and description,
+then call this to push everything to the remote."
+  (interactive)
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (file (and todo (plist-get todo :file)))
+         (worktree-path (and todo (plist-get todo :worktree-path)))
+         (branch (and todo (plist-get todo :worktree-branch))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless worktree-path
+      (user-error "TODO has no worktree"))
+    (unless branch
+      (user-error "TODO has no branch"))
+    
+    (require 'org-roam-todo-wf-pr-feedback)
+    
+    ;; Step 1: Push the branch with --force-with-lease
+    (let ((default-directory worktree-path))
+      (message "Pushing branch %s with --force-with-lease..." branch)
+      (let ((push-result (shell-command-to-string
+                          (format "git push --force-with-lease origin %s 2>&1"
+                                  (shell-quote-argument branch)))))
+        (unless (or (string-match-p "\\(->\\|up to date\\|Everything up-to-date\\)" push-result)
+                    (string= "" (string-trim push-result)))
+          ;; Check for actual errors (not just "Everything up-to-date")
+          (when (string-match-p "\\(error\\|fatal\\|rejected\\)" push-result)
+            (user-error "Git push failed: %s" push-result)))))
+    
+    ;; Step 2: Sync PR metadata
+    (let ((sections (org-roam-todo-wf-pr-feedback--get-sections file)))
+      (if sections
+          (let ((title (car sections))
+                (body (cdr sections)))
+            (when (and title (not (string-empty-p (string-trim title))))
+              (org-roam-todo-wf-pr-feedback--update-pr worktree-path title body)
+              ;; Invalidate cache since we updated the PR
+              (org-roam-todo-wf-pr-feedback-invalidate-cache worktree-path)
+              (message "PR synced: %s" title)
+              (format "Branch pushed and PR synced successfully.\nBranch: %s\nTitle: %s\nDescription: %s"
+                      branch
+                      title
+                      (if body
+                          (if (> (length body) 100)
+                              (concat (substring body 0 100) "...")
+                            body)
+                        "(empty)"))))
+        ;; No PR metadata yet - just report the push
+        (format "Branch pushed successfully.\nBranch: %s\n\nNo PR metadata found. Use mcp__emacs__todo_pr_update_meta to set title/description."
+                branch)))))
 
 ;;; ============================================================
 ;;; Permission Request Tool
@@ -1302,8 +1370,8 @@ Use this to:
           :args ((todo-id string "Optional: TODO file path, title, or ID")
                  (check-name string "Optional: specific check name to view logs for")))
 
-        (claude-mcp-deftool todo-pr-update
-          "Update the PR title and description for a TODO.
+        (claude-mcp-deftool todo-pr-update-meta
+          "Update the PR metadata (title and description) for a TODO.
 Creates a separate PR file (todo-name-pr.org) with the PR content.
 
 The PR file is a simple org file:
@@ -1311,15 +1379,30 @@ The PR file is a simple org file:
 
   PR description goes here in org format...
 
-Use this to set the PR title and description before advancing to review.
-When todo-advance is called to enter review status, the PR content is
-automatically pushed to GitHub/GitLab."
-          :function #'org-roam-todo-wf-tools-pr-update
+This only updates the local metadata file. To push the branch and sync
+the PR to the remote forge, use `todo-pr-create-or-update' after this."
+          :function #'org-roam-todo-wf-tools-pr-update-meta
           :safe t
           :needs-session-cwd t
           :args ((title string :required "The PR title")
                  (body string "The PR description/body in org format")
                  (todo-id string "Optional: TODO file path, title, or ID")))
+
+        (claude-mcp-deftool todo-pr-create-or-update
+          "Push branch and sync PR to remote forge.
+This is the main tool for updating a PR. It performs two steps:
+
+1. Pushes the current branch with --force-with-lease (safe force push)
+2. Syncs the PR title and description from the metadata file to GitHub/GitLab
+
+Use `todo-pr-update-meta' first to set the PR title and description,
+then call this to push everything to the remote.
+
+If no PR metadata exists yet, this will just push the branch."
+          :function #'org-roam-todo-wf-tools-pr-create-or-update
+          :safe t
+          :needs-session-cwd t
+          :args ((todo-id string "Optional: TODO file path, title, or ID")))
 
 
         (claude-mcp-deftool todo-add-progress

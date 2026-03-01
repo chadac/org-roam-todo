@@ -339,12 +339,30 @@ added without overwriting the base list."
   :safe #'listp
   :group 'org-roam-todo)
 
-(defun org-roam-todo-effective-agent-allowed-tools ()
-  "Return the effective allowed tools list (base + extra).
-Combines `org-roam-todo-agent-allowed-tools' and
-`org-roam-todo-agent-allowed-tools-extra'."
-  (append org-roam-todo-agent-allowed-tools
-          org-roam-todo-agent-allowed-tools-extra))
+(defcustom org-roam-todo-agent-pr-workflow-tools
+  '("mcp__emacs__todo_pr_feedback"
+    "mcp__emacs__todo_pr_comments"
+    "mcp__emacs__todo_pr_ci_logs"
+    "mcp__emacs__todo_pr_update_meta"
+    "mcp__emacs__todo_pr_create_or_update")
+  "Tools that are only available in pull-request workflow agents.
+These tools interact with GitHub/GitLab PRs and are only relevant
+when the TODO is using the pull-request workflow."
+  :type '(repeat string)
+  :group 'org-roam-todo)
+
+(defun org-roam-todo-effective-agent-allowed-tools (&optional workflow-name)
+  "Return the effective allowed tools list (base + extra + workflow-specific).
+Combines `org-roam-todo-agent-allowed-tools',
+`org-roam-todo-agent-allowed-tools-extra', and workflow-specific tools.
+
+When WORKFLOW-NAME is `pull-request', also includes tools from
+`org-roam-todo-agent-pr-workflow-tools'."
+  (let ((base-tools (append org-roam-todo-agent-allowed-tools
+                            org-roam-todo-agent-allowed-tools-extra)))
+    (if (eq workflow-name 'pull-request)
+        (append base-tools org-roam-todo-agent-pr-workflow-tools)
+      base-tools)))
 
 (defcustom org-roam-todo-worktree-copy-patterns
   '(".claude/settings.local.json" ".dir-locals.el" ".envrc")
