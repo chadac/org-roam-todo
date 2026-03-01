@@ -368,33 +368,41 @@ Note: Enter hooks run BEFORE status update so that if an action fails
                   old-status new-status
                   (org-roam-todo-wf--next-statuses workflow old-status)))
 
-    ;; 2. Run validation hooks - collect results, block on :fail/:error
+    ;; 2. Run validation hooks - collect results, block on :fail/:error/:pending
     (setf (org-roam-todo-event-type event)
           (intern (format ":validate-%s" new-status)))
     (let ((validation-results (org-roam-todo-wf--dispatch-event event)))
-      ;; Check for blocking failures (:fail or :error)
+      ;; Check for blocking statuses (:fail, :error, or :pending)
       ;; Handle both old format and new format with :priority/:function/:result
       (cl-loop for result in (plist-get validation-results :results)
                for status = (org-roam-todo-wf--extract-result-status result)
                for inner = (plist-get result :result)
-               ;; Extract error message from the result
+               ;; Extract message from the result
                ;; New format: (:priority N :function F :result (:fail "msg"))
                ;; Old format: (:fail "msg") directly
                ;; Note: inner could be :pass (symbol) or (:fail "msg") (list)
                for msg = (cond
-                          ;; New format: inner is (:fail "msg") or (:error "msg")
+                          ;; New format: inner is (:fail "msg"), (:error "msg"), or (:pending "msg")
                           ((and inner (listp inner)
-                                (memq (car inner) '(:fail :error)))
+                                (memq (car inner) '(:fail :error :pending)))
                            (cadr inner))
                           ;; Old format: result itself is (:fail "msg") - NOT a plist
                           ((and (listp result)
                                 (not (plist-get result :priority))
-                                (memq (car result) '(:fail :error)))
+                                (memq (car result) '(:fail :error :pending)))
                            (cadr result))
-                          ;; No message available (e.g., :pass or :pending)
+                          ;; No message available (e.g., :pass)
                           (t nil))
+               ;; Block on :fail or :error
                when (memq status '(:fail :error))
-               do (user-error "Validation failed: %s" msg))
+               do (user-error "Validation failed: %s" msg)
+               ;; Block on :pending with helpful message about waiting
+               when (eq status :pending)
+               do (user-error "Validation pending: %s
+
+Async validations are still running. You can either:
+1. Wait and try again when validations complete
+2. Use `mcp__emacs__todo_watch_status` to wait for completion automatically" msg))
 
       ;; Store results for auto-upgrade system and feedback display
       (when (plist-get validation-results :results)
