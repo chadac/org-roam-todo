@@ -98,6 +98,26 @@ Validation functions receive an `event` parameter and should:
 - Signal `user-error` on failure (with a helpful message)
 - Return `(:pending "message")` for async validations
 
+#### Async Validations
+
+For long-running validations (tests, builds), use `org-roam-todo-async-validation`:
+
+```elisp
+(defun my-project-run-tests (event)
+  "Run tests asynchronously with commit-based caching."
+  (org-roam-todo-async-validation
+   :command '("npm" "test")
+   :directory (org-roam-todo-prop event "WORKTREE_PATH")
+   :name "tests"
+   :message "Running tests..."))
+```
+
+Benefits:
+- Runs in background without blocking Emacs
+- Results cached by git commit SHA (won't re-run for same commit)
+- Status buffer auto-refreshes when complete
+- Cache invalidated when you make new commits
+
 The config file is automatically loaded when processing TODOs for that project.
 You can choose to commit it (shared with team) or add it to `.gitignore` (personal only).
 

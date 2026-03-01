@@ -319,8 +319,10 @@ Status can be: pass, pending, fail, feedback, or error."
                           (org-roam-todo-wf-project-get-validations project-root validate-key))))
          (fns (append workflow-fns project-fns))
          (results '()))
-    (dolist (fn fns)
-      (let* ((raw-result (condition-case err
+    (dolist (fn-entry fns)
+      ;; Handle both plain symbols and (priority . symbol) cons cells
+      (let* ((fn (if (consp fn-entry) (cdr fn-entry) fn-entry))
+             (raw-result (condition-case err
                              (funcall fn event)
                            (user-error (list :fail (cadr err)))
                            (error (list :error (error-message-string err)))))
