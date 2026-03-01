@@ -108,16 +108,24 @@ check-requires:
     fi
     echo "All modules are properly required."
 
-# Check for circular dependencies between elisp files
+# Check for circular dependencies between elisp files (top-level requires only)
 check-deps:
     #!/usr/bin/env bash
     set -e
-    # Build dependency graph: for each file, find what it requires
+    # Build dependency graph: for each file, find top-level requires only
+    # Top-level requires are those before the first defun/defmacro/defvar/defcustom
     declare -A deps
     for f in org-roam-todo*.el; do
         feature=$(basename "$f" .el)
-        # Extract requires (excluding external packages)
-        requires=$(grep -oP "\\(require '\\Korg-roam-todo[^)]*" "$f" 2>/dev/null | tr '\n' ' ')
+        # Extract only top-level requires (before first def* form)
+        # This ignores lazy requires inside functions which are fine for circular deps
+        requires=$(awk '
+            /^[[:space:]]*\(def(un|macro|var|custom|const|face|group)/ { exit }
+            /\(require '"'"'org-roam-todo/ { 
+                match($0, /\(require '"'"'(org-roam-todo[^)]*)\)/, arr)
+                if (arr[1]) print arr[1]
+            }
+        ' "$f" 2>/dev/null | tr '\n' ' ')
         deps[$feature]="$requires"
     done
     
