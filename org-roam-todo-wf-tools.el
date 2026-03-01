@@ -590,13 +590,13 @@ This function is called periodically by a timer."
                                                      &optional poll-interval timeout)
   "Watch TODO-ID's status until auto-upgrade completes or times out (async).
 TASK-ID and SERVER-PORT are provided by the MCP async framework.
-POLL-INTERVAL defaults to 30 seconds.
+POLL-INTERVAL defaults to 5 seconds (suitable for async validations).
 TIMEOUT defaults to 3600 seconds (1 hour).
 
 Returns :async-started immediately and polls in the background."
   (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
          (timeout-secs (or timeout 3600))
-         (poll-secs (or poll-interval 30)))
+         (poll-secs (or poll-interval 5)))
     
     (unless todo
       (claude-mcp-async-error task-id (format "TODO not found: %s" todo-id))
