@@ -343,9 +343,20 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, then get-pr-info:
+                 ;;   - get-pullreq returns nil (mocked below)
+                 ;;   - PR (strategy 2), PR_NUMBER (strategy 2 fallback)
+                 ;;   - WORKTREE_BRANCH again (strategy 3 fallback)
+                 ;; Then: TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "PR"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+                   :output nil)
+                  ;; Strategy 3 in get-pr-info reads WORKTREE_BRANCH again
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
                    :output "feat/my-feature")
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
@@ -356,6 +367,12 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))
+               (org-roam-todo-wf-pr--get-pullreq (path)
+                 ;; Return nil so get-pr-info falls through to strategy 2 & 3
+                 ((:input-matcher (lambda (p) t) :output nil)))
+               (org-roam-todo-wf-pr--get-pr-number-via-gh (path branch)
+                 ;; Strategy 3: gh CLI lookup returns nil (no existing PR)
+                 ((:input-matcher (lambda (p b) t) :output nil)))
                (org-roam-todo-wf-pr--get-forge-repo (path)
                  ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
                (forge--rest (repo method endpoint data &rest args)
@@ -391,9 +408,20 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, then get-pr-info:
+                 ;;   - get-pullreq returns nil (mocked below)
+                 ;;   - PR (strategy 2), PR_NUMBER (strategy 2 fallback)
+                 ;;   - WORKTREE_BRANCH again (strategy 3 fallback)
+                 ;; Then: TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "PR"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+                   :output nil)
+                  ;; Strategy 3 in get-pr-info reads WORKTREE_BRANCH again
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
                    :output "feat/my-feature")
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
@@ -404,6 +432,12 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))
+               (org-roam-todo-wf-pr--get-pullreq (path)
+                 ;; Return nil so get-pr-info falls through to strategy 2 & 3
+                 ((:input-matcher (lambda (p) t) :output nil)))
+               (org-roam-todo-wf-pr--get-pr-number-via-gh (path branch)
+                 ;; Strategy 3: gh CLI lookup returns nil (no existing PR)
+                 ((:input-matcher (lambda (p b) t) :output nil)))
                (org-roam-todo-wf-pr--get-forge-repo (path)
                  ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
                (forge--rest (repo method endpoint data &rest args)
@@ -436,9 +470,20 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
           (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
           (mocker-let
               ((org-roam-todo-prop (event prop)
-                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
+                 ;; Order: WORKTREE_PATH, WORKTREE_BRANCH, then get-pr-info:
+                 ;;   - get-pullreq returns nil (mocked below)
+                 ;;   - PR (strategy 2), PR_NUMBER (strategy 2 fallback)
+                 ;;   - WORKTREE_BRANCH again (strategy 3 fallback)
+                 ;; Then: TITLE, DESCRIPTION, PROJECT_NAME, TARGET_BRANCH
                  ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
                    :output temp-dir)
+                  (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
+                   :output "feat/my-feature")
+                  (:input-matcher (lambda (e p) (string= p "PR"))
+                   :output nil)
+                  (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+                   :output nil)
+                  ;; Strategy 3 in get-pr-info reads WORKTREE_BRANCH again
                   (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
                    :output "feat/my-feature")
                   (:input-matcher (lambda (e p) (string= p "TITLE"))
@@ -449,6 +494,12 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
                    :output nil)
                   (:input-matcher (lambda (e p) (string= p "TARGET_BRANCH"))
                    :output nil)))
+               (org-roam-todo-wf-pr--get-pullreq (path)
+                 ;; Return nil so get-pr-info falls through to strategy 2 & 3
+                 ((:input-matcher (lambda (p) t) :output nil)))
+               (org-roam-todo-wf-pr--get-pr-number-via-gh (path branch)
+                 ;; Strategy 3: gh CLI lookup returns nil (no existing PR)
+                 ((:input-matcher (lambda (p b) t) :output nil)))
                (org-roam-todo-wf-pr--get-forge-repo (path)
                  ((:input-matcher (lambda (p) (string= p temp-dir)) :output mock-repo)))
                (forge--glab-post (repo endpoint data &rest args)
@@ -578,7 +629,10 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
   (require 'org-roam-todo-wf-pr nil t)
   (mocker-let
       ((org-roam-todo-wf-pr--get-pullreq (path)
-         ((:input '("/tmp/test-repo") :output nil))))
+         ((:input '("/tmp/test-repo") :output nil)))
+       ;; gh CLI fallback also returns nil
+       (org-roam-todo-wf-pr--get-pr-state-via-gh (path &optional pr-number)
+         ((:input-matcher (lambda (p &optional n) t) :output nil))))
     (should-not (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
 
 ;;; ============================================================
@@ -820,8 +874,9 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
         ((org-roam-todo-prop (event prop)
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
-         (org-roam-todo-wf-pr--get-pr-state (path)
-           ((:input '("/tmp/test-repo") :output 'merged))))
+         (org-roam-todo-wf-pr--get-pr-state (path &optional event)
+           ((:input-matcher (lambda (p &optional e) (string= p "/tmp/test-repo"))
+             :output 'merged))))
       ;; Should not error when merged
       (should-not (org-roam-todo-wf-pr--require-pr-merged event)))))
 
@@ -837,8 +892,9 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
         ((org-roam-todo-prop (event prop)
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
-         (org-roam-todo-wf-pr--get-pr-state (path)
-           ((:input '("/tmp/test-repo") :output 'open))))
+         (org-roam-todo-wf-pr--get-pr-state (path &optional event)
+           ((:input-matcher (lambda (p &optional e) (string= p "/tmp/test-repo"))
+             :output 'open))))
       ;; Should error when still open
       (should-error (org-roam-todo-wf-pr--require-pr-merged event)
                     :type 'user-error))))
@@ -855,8 +911,9 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
         ((org-roam-todo-prop (event prop)
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
-         (org-roam-todo-wf-pr--get-pr-state (path)
-           ((:input '("/tmp/test-repo") :output 'closed))))
+         (org-roam-todo-wf-pr--get-pr-state (path &optional event)
+           ((:input-matcher (lambda (p &optional e) (string= p "/tmp/test-repo"))
+             :output 'closed))))
       ;; Should error when closed without merge
       (should-error (org-roam-todo-wf-pr--require-pr-merged event)
                     :type 'user-error))))
@@ -873,8 +930,9 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
         ((org-roam-todo-prop (event prop)
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
-         (org-roam-todo-wf-pr--get-pr-state (path)
-           ((:input '("/tmp/test-repo") :output nil))))
+         (org-roam-todo-wf-pr--get-pr-state (path &optional event)
+           ((:input-matcher (lambda (p &optional e) (string= p "/tmp/test-repo"))
+             :output nil))))
       ;; Should error when state is unknown
       (should-error (org-roam-todo-wf-pr--require-pr-merged event)
                     :type 'user-error))))
@@ -967,8 +1025,8 @@ the user-approval validation."
 ;;; PR Title and Body Helper Tests
 ;;; ============================================================
 
-(ert-deftest wf-pr-test-get-pr-title-from-section ()
-  "Test get-pr-title returns content from PR Title section."
+(ert-deftest wf-pr-test-get-pr-title-from-pr-node ()
+  "Test get-pr-title returns title from PR node."
   :tags '(:unit :wf :pr :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -977,16 +1035,40 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\nFix: Important bug fix\n\n")
-            (insert "** PR Description\n\nThis fixes an important bug.\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix: Important bug fix\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "This fixes an important bug.\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file))))
             (should (string= "Fix: Important bug fix"
                              (org-roam-todo-wf-pr--get-pr-title event)))))
       (delete-file temp-file))))
 
+(ert-deftest wf-pr-test-get-pr-title-from-pr-file ()
+  "Test get-pr-title returns title from separate PR file."
+  :tags '(:unit :wf :pr :pr-sections :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-dir-" t))
+         (todo-file (expand-file-name "my-todo.org" temp-dir))
+         (pr-file (expand-file-name "my-todo-pr.org" temp-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file todo-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Task Description\n\nSome task.\n"))
+          (with-temp-file pr-file
+            (insert "#+title: PR Title From File\n\n")
+            (insert "PR body content.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file todo-file))))
+            (should (string= "PR Title From File"
+                             (org-roam-todo-wf-pr--get-pr-title event)))))
+      (delete-directory temp-dir t))))
+
 (ert-deftest wf-pr-test-get-pr-title-fallback-to-title ()
-  "Test get-pr-title falls back to TODO title when no PR Title section."
+  "Test get-pr-title falls back to TODO title when no PR node or file."
   :tags '(:unit :wf :pr :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
@@ -1019,8 +1101,8 @@ the user-approval validation."
     (should (string= "Custom PR Title"
                      (org-roam-todo-wf-pr--get-pr-title event)))))
 
-(ert-deftest wf-pr-test-get-pr-body-from-section ()
-  "Test get-pr-body returns content from PR Description section."
+(ert-deftest wf-pr-test-get-pr-body-from-pr-node ()
+  "Test get-pr-body returns content from PR node."
   :tags '(:unit :wf :pr :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -1029,14 +1111,39 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\nFix bug\n\n")
-            (insert "** PR Description\n\n## Summary\n\nThis PR fixes the bug.\n\n## Test Plan\n\n- Test manually\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix bug\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "## Summary\n\nThis PR fixes the bug.\n\n## Test Plan\n\n- Test manually\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file)))
                  (body (org-roam-todo-wf-pr--get-pr-body event)))
             (should (string-match-p "## Summary" body))
             (should (string-match-p "This PR fixes the bug" body))))
       (delete-file temp-file))))
+
+(ert-deftest wf-pr-test-get-pr-body-from-pr-file ()
+  "Test get-pr-body returns content from separate PR file."
+  :tags '(:unit :wf :pr :pr-sections :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-dir-" t))
+         (todo-file (expand-file-name "my-todo.org" temp-dir))
+         (pr-file (expand-file-name "my-todo-pr.org" temp-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file todo-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Task Description\n\nSome task.\n"))
+          (with-temp-file pr-file
+            (insert "#+title: PR Title\n\n")
+            (insert "* Summary\n\nPR body from file.\n\n* Test Plan\n\n- Run tests\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file todo-file)))
+                 (body (org-roam-todo-wf-pr--get-pr-body event)))
+            (should (string-match-p "Summary" body))
+            (should (string-match-p "PR body from file" body))))
+      (delete-directory temp-dir t))))
 
 (ert-deftest wf-pr-test-get-pr-body-custom-function ()
   "Test get-pr-body uses custom function when set."
@@ -1055,7 +1162,7 @@ the user-approval validation."
 ;;; ============================================================
 
 (ert-deftest wf-pr-test-require-pr-sections-pass ()
-  "Test require-pr-sections passes when both sections exist."
+  "Test require-pr-sections passes when PR node exists with title and body."
   :tags '(:unit :wf :pr :validation :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -1065,16 +1172,18 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\nFix: Bug fix\n\n")
-            (insert "** PR Description\n\nThis fixes the bug.\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix: Bug fix\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "This fixes the bug.\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file))))
             ;; Should not error
             (should-not (org-roam-todo-wf-pr--require-pr-sections event))))
       (delete-file temp-file))))
 
-(ert-deftest wf-pr-test-require-pr-sections-missing-title ()
-  "Test require-pr-sections fails when PR Title section is missing."
+(ert-deftest wf-pr-test-require-pr-sections-missing-pr-node ()
+  "Test require-pr-sections fails when PR node is missing."
   :tags '(:unit :wf :pr :validation :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -1084,15 +1193,15 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Description\n\nThis fixes the bug.\n"))
+            (insert "** Task Description\n\nNo PR node here.\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file))))
             (should-error (org-roam-todo-wf-pr--require-pr-sections event)
                           :type 'user-error)))
       (delete-file temp-file))))
 
-(ert-deftest wf-pr-test-require-pr-sections-missing-description ()
-  "Test require-pr-sections fails when PR Description section is missing."
+(ert-deftest wf-pr-test-require-pr-sections-missing-body ()
+  "Test require-pr-sections fails when PR node has no body."
   :tags '(:unit :wf :pr :validation :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -1102,7 +1211,9 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\nFix: Bug fix\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix: Bug fix\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file))))
             (should-error (org-roam-todo-wf-pr--require-pr-sections event)
@@ -1110,7 +1221,7 @@ the user-approval validation."
       (delete-file temp-file))))
 
 (ert-deftest wf-pr-test-require-pr-sections-empty-title ()
-  "Test require-pr-sections fails when PR Title section is empty."
+  "Test require-pr-sections fails when PR node heading is empty."
   :tags '(:unit :wf :pr :validation :pr-sections)
   (org-roam-todo-wf-test--require-wf)
   (require 'org-roam-todo-wf-pr nil t)
@@ -1120,10 +1231,13 @@ the user-approval validation."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\n")
-            (insert "** PR Description\n\nSome description.\n"))
+            (insert "** Pull Request Details\n")
+            (insert "***\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "Some description.\n"))
           (let* ((event (make-org-roam-todo-event
                          :todo (list :file temp-file))))
+            ;; Empty heading means no PR node found
             (should-error (org-roam-todo-wf-pr--require-pr-sections event)
                           :type 'user-error)))
       (delete-file temp-file))))
@@ -1241,21 +1355,30 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
 ;;; ============================================================
 
 (ert-deftest wf-pr-test-get-pr-number-from-props ()
-  "Test get-pr-number-from-props reads PR_NUMBER from TODO properties."
+  "Test get-pr-number-from-props reads PR or PR_NUMBER from TODO properties."
   :tags '(:unit :wf :pr :detection)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
   (require 'org-roam-todo-wf-pr nil t)
   (let ((event (make-org-roam-todo-event
                 :todo (list :file "/tmp/test-todo.org"))))
+    ;; Test with :PR property set (preferred)
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+           ((:input-matcher (lambda (e p) (string= p "PR"))
              :output "123"))))
-      (should (string= "123" (org-roam-todo-wf-pr--get-pr-number-from-props event))))))
+      (should (string= "123" (org-roam-todo-wf-pr--get-pr-number-from-props event))))
+    ;; Test with :PR_NUMBER fallback when :PR is nil
+    (mocker-let
+        ((org-roam-todo-prop (event prop)
+           ((:input-matcher (lambda (e p) (string= p "PR"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+             :output "456"))))
+      (should (string= "456" (org-roam-todo-wf-pr--get-pr-number-from-props event))))))
 
 (ert-deftest wf-pr-test-get-pr-number-from-props-nil ()
-  "Test get-pr-number-from-props returns nil when PR_NUMBER not set."
+  "Test get-pr-number-from-props returns nil when neither PR nor PR_NUMBER set."
   :tags '(:unit :wf :pr :detection)
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
@@ -1264,7 +1387,9 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
                 :todo (list :file "/tmp/test-todo.org"))))
     (mocker-let
         ((org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+           ((:input-matcher (lambda (e p) (string= p "PR"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
              :output nil))))
       (should-not (org-roam-todo-wf-pr--get-pr-number-from-props event)))))
 
@@ -1305,7 +1430,9 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
         ((org-roam-todo-wf-pr--get-pullreq (path)
            ((:input '("/tmp/test-repo") :output nil)))
          (org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+           ((:input-matcher (lambda (e p) (string= p "PR"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
              :output "99")))
          (org-roam-todo-wf-pr--get-repo-info-via-gh (path)
            ((:input '("/tmp/test-repo") :output '("my-owner" . "my-repo")))))
@@ -1328,7 +1455,9 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
         ((org-roam-todo-wf-pr--get-pullreq (path)
            ((:input '("/tmp/test-repo") :output nil)))
          (org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+           ((:input-matcher (lambda (e p) (string= p "PR"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
              :output nil)
             (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
              :output "feature/my-branch")))
@@ -1355,7 +1484,9 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
         ((org-roam-todo-wf-pr--get-pullreq (path)
            ((:input '("/tmp/test-repo") :output nil)))
          (org-roam-todo-prop (event prop)
-           ((:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
+           ((:input-matcher (lambda (e p) (string= p "PR"))
+             :output nil)
+            (:input-matcher (lambda (e p) (string= p "PR_NUMBER"))
              :output nil)
             (:input-matcher (lambda (e p) (string= p "WORKTREE_BRANCH"))
              :output "feature/my-branch")))
@@ -1419,6 +1550,138 @@ In the simplified 4-stage workflow, all validations are in :validate-review."
         (should (string-match-p "forge" (cadr result)))
         (should (string-match-p "PR_NUMBER" (cadr result)))
         (should (string-match-p "gh CLI" (cadr result)))))))
+
+;;; ============================================================
+;;; PR File Tests (separate file approach)
+;;; ============================================================
+
+(ert-deftest wf-pr-test-get-pr-file-path ()
+  "Test get-pr-file returns correct path for PR file."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (should (string= "/tmp/my-todo-pr.org"
+                   (org-roam-todo-wf-pr--get-pr-file "/tmp/my-todo.org")))
+  (should (string= "/home/user/projects/todo-fix-bug-pr.org"
+                   (org-roam-todo-wf-pr--get-pr-file "/home/user/projects/todo-fix-bug.org"))))
+
+(ert-deftest wf-pr-test-read-pr-file-exists ()
+  "Test read-pr-file reads title and body from PR file."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((pr-file (make-temp-file "test-pr-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file pr-file
+            (insert "#+title: Fix important bug\n\n")
+            (insert "This PR fixes an important bug.\n\n")
+            (insert "* Summary\n\nDetails here.\n"))
+          (let ((result (org-roam-todo-wf-pr--read-pr-file pr-file)))
+            (should result)
+            (should (string= "Fix important bug" (plist-get result :title)))
+            (should (string-match-p "This PR fixes" (plist-get result :body)))
+            (should (string-match-p "Summary" (plist-get result :body)))))
+      (delete-file pr-file))))
+
+(ert-deftest wf-pr-test-read-pr-file-not-exists ()
+  "Test read-pr-file returns nil when file doesn't exist."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (should-not (org-roam-todo-wf-pr--read-pr-file "/tmp/nonexistent-pr-file.org")))
+
+(ert-deftest wf-pr-test-read-pr-file-empty-body ()
+  "Test read-pr-file handles file with title but no body."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((pr-file (make-temp-file "test-pr-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file pr-file
+            (insert "#+title: Title only\n"))
+          (let ((result (org-roam-todo-wf-pr--read-pr-file pr-file)))
+            (should result)
+            (should (string= "Title only" (plist-get result :title)))
+            (should-not (plist-get result :body))))
+      (delete-file pr-file))))
+
+(ert-deftest wf-pr-test-get-pr-node-prefers-pr-file ()
+  "Test get-pr-node prefers separate PR file over inline node."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-dir-" t))
+         (todo-file (expand-file-name "my-todo.org" temp-dir))
+         (pr-file (expand-file-name "my-todo-pr.org" temp-dir)))
+    (unwind-protect
+        (progn
+          ;; Create TODO file with inline PR node
+          (with-temp-file todo-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Pull Request Details\n")
+            (insert "*** Inline PR Title\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "Inline PR description.\n"))
+          ;; Create separate PR file
+          (with-temp-file pr-file
+            (insert "#+title: Separate PR Title\n\n")
+            (insert "Separate PR description.\n"))
+          ;; Should prefer the separate PR file
+          (let ((result (org-roam-todo-wf-pr--get-pr-node todo-file)))
+            (should result)
+            (should (string= "Separate PR Title" (plist-get result :title)))
+            (should (string-match-p "Separate PR description" (plist-get result :body)))))
+      (delete-directory temp-dir t))))
+
+(ert-deftest wf-pr-test-get-pr-node-falls-back-to-inline ()
+  "Test get-pr-node falls back to inline node when no PR file exists."
+  :tags '(:unit :wf :pr :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-dir-" t))
+         (todo-file (expand-file-name "my-todo.org" temp-dir)))
+    (unwind-protect
+        (progn
+          ;; Create TODO file with inline PR node only (no separate file)
+          (with-temp-file todo-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Pull Request Details\n")
+            (insert "*** Inline PR Title\n")
+            (insert ":PROPERTIES:\n:ID: pr-node\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "Inline PR description.\n"))
+          ;; Should use the inline PR node
+          (let ((result (org-roam-todo-wf-pr--get-pr-node todo-file)))
+            (should result)
+            (should (string= "Inline PR Title" (plist-get result :title)))
+            (should (string-match-p "Inline PR description" (plist-get result :body)))))
+      (delete-directory temp-dir t))))
+
+(ert-deftest wf-pr-test-require-pr-sections-with-pr-file ()
+  "Test require-pr-sections passes when PR file exists."
+  :tags '(:unit :wf :pr :validation :pr-file)
+  (org-roam-todo-wf-test--require-wf)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let* ((temp-dir (make-temp-file "test-dir-" t))
+         (todo-file (expand-file-name "my-todo.org" temp-dir))
+         (pr-file (expand-file-name "my-todo-pr.org" temp-dir))
+         (org-roam-todo-wf-pr-require-pr-sections t))
+    (unwind-protect
+        (progn
+          ;; Create minimal TODO file (no inline PR node)
+          (with-temp-file todo-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Task Description\n\nSome task.\n"))
+          ;; Create separate PR file
+          (with-temp-file pr-file
+            (insert "#+title: PR Title\n\n")
+            (insert "PR description here.\n"))
+          (let* ((event (make-org-roam-todo-event
+                         :todo (list :file todo-file))))
+            ;; Should not error - PR file satisfies validation
+            (should-not (org-roam-todo-wf-pr--require-pr-sections event))))
+      (delete-directory temp-dir t))))
 
 (provide 'org-roam-todo-wf-pr-test)
 ;;; org-roam-todo-wf-pr-test.el ends here

@@ -45,6 +45,7 @@
 ;; Optional: magit-forge-ci for CI status checking
 (declare-function magit-forge-ci--get-checks-via-gh-cli "magit-forge-ci" (owner repo pr-number))
 (declare-function magit-forge-ci--compute-overall-status "magit-forge-ci" (statuses))
+(declare-function org-roam-todo-wf-pr-feedback--update-pr "org-roam-todo-wf-pr-feedback")
 (autoload 'forge-rest "forge-core")
 (autoload 'forge--set-topic-draft "forge-github")
 (autoload 'forge--set-topic-review-requests "forge-github")
@@ -221,9 +222,10 @@ Falls back to database lookup if git config is not set."
 
 (defun org-roam-todo-wf-pr--get-pr-number-from-props (event)
   "Get PR number from TODO properties.
-Reads :PR_NUMBER: property from the TODO file.
+Reads :PR: or :PR_NUMBER: property from the TODO file.
 Returns the PR number as a string, or nil if not set."
-  (org-roam-todo-prop event "PR_NUMBER"))
+  (or (org-roam-todo-prop event "PR")
+      (org-roam-todo-prop event "PR_NUMBER")))
 
 (defun org-roam-todo-wf-pr--get-pr-number-via-gh (worktree-path branch)
   "Get PR number for BRANCH using gh CLI.
@@ -312,65 +314,97 @@ GitHub/GitLab APIs expect branch names without remote prefixes."
       (match-string 1 branch)
     branch))
 
-(defun org-roam-todo-wf-pr--get-pr-node (file)
-  "Get PR node info from FILE.
-Looks for a heading with :ROAM_TYPE: pr property.
-Returns a plist with :title and :body, or nil if not found.
-The heading text becomes the PR title, and the content becomes the body."
-  (when (and file (file-exists-p file))
+(defun org-roam-todo-wf-pr--get-pr-file (todo-file)
+  "Get the PR file path for TODO-FILE.
+The PR file is a separate file (todo-name-pr.org) that stores PR content."
+  (when todo-file
+    (let* ((dir (file-name-directory todo-file))
+           (base (file-name-base todo-file)))
+      (expand-file-name (concat base "-pr.org") dir))))
+
+(defun org-roam-todo-wf-pr--read-pr-file (pr-file)
+  "Read PR content from PR-FILE.
+Returns a plist with :title and :body, or nil if file doesn\='t exist.
+Strips \='Pull Request: \=' prefix from title if present.
+Handles both old format (just #+title:) and new format (with :PROPERTIES:)."
+  (when (and pr-file (file-exists-p pr-file))
     (with-temp-buffer
-      (insert-file-contents file)
+      (insert-file-contents pr-file)
       (goto-char (point-min))
-      ;; Find a heading with ROAM_TYPE: pr property
-      (let ((found nil)
-            (case-fold-search t))
-        (while (and (not found)
-                    (re-search-forward "^\\(\\*+\\)\\s-+\\(.+\\)$" nil t))
-          (let ((level (length (match-string 1)))
-                (heading-title (match-string 2)))
-            ;; Check if this heading has ROAM_TYPE: pr
-            (save-excursion
-              (forward-line 1)
-              (when (looking-at "\\s-*:PROPERTIES:")
-                (let ((props-start (point)))
-                  (when (re-search-forward "^\\s-*:END:" nil t)
-                    (let ((props-text (buffer-substring-no-properties props-start (point))))
-                      (when (string-match ":ROAM_TYPE:\\s-*pr" props-text)
-                        ;; Found the PR node - extract body
-                        (forward-line 1)
-                        (let* ((body-start (point))
-                               ;; Find end: next heading of same level or higher, or end of file
-                               (body-end (if (re-search-forward
-                                              (format "^\\*\\{1,%d\\}\\s-" level) nil t)
-                                             (match-beginning 0)
-                                           (point-max)))
-                               (body (string-trim
-                                      (buffer-substring-no-properties body-start body-end))))
-                          (setq found (list :title (string-trim heading-title)
-                                            :body (if (string-empty-p body) nil body))))))))))))
-        found))))
+      (let ((title nil)
+            (body nil))
+        ;; Skip properties drawer if present
+        (when (looking-at ":PROPERTIES:")
+          (re-search-forward "^:END:" nil t)
+          (forward-line 1))
+        ;; Find title, stripping "Pull Request: " prefix if present
+        (when (re-search-forward "^#\\+title:\\s-*\\(Pull Request:\\s-*\\)?\\(.+\\)$" nil t)
+          (setq title (string-trim (or (match-string 2) (match-string 1)))))
+        (forward-line 1)
+        ;; Skip blank lines and parent link
+        (while (and (not (eobp))
+                    (or (looking-at "^$")
+                        (looking-at "^Parent TODO:")))
+          (forward-line 1))
+        (setq body (string-trim (buffer-substring-no-properties (point) (point-max))))
+        (when (string-empty-p body) (setq body nil))
+        (list :title title :body body)))))
+
+(defun org-roam-todo-wf-pr--get-pr-node (file)
+  "Get PR info for TODO FILE.
+First checks for a separate PR file (todo-name-pr.org).
+Falls back to heading with :ROAM_TYPE: pr property in the TODO file.
+Returns a plist with :title and :body, or nil if not found."
+  (when (and file (file-exists-p file))
+    ;; First try separate PR file
+    (let ((pr-file (org-roam-todo-wf-pr--get-pr-file file)))
+      (or (org-roam-todo-wf-pr--read-pr-file pr-file)
+          ;; Fall back to inline PR node in TODO file
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            ;; Find a heading with ROAM_TYPE: pr property
+            (let ((found nil)
+                  (case-fold-search t))
+              (while (and (not found)
+                          (re-search-forward "^\\(\\*+\\)\\s-+\\(.+\\)$" nil t))
+                (let ((level (length (match-string 1)))
+                      (heading-title (match-string 2)))
+                  ;; Check if this heading has ROAM_TYPE: pr
+                  (save-excursion
+                    (forward-line 1)
+                    (when (looking-at "\\s-*:PROPERTIES:")
+                      (let ((props-start (point)))
+                        (when (re-search-forward "^\\s-*:END:" nil t)
+                          (let ((props-text (buffer-substring-no-properties props-start (point))))
+                            (when (string-match ":ROAM_TYPE:\\s-*pr" props-text)
+                              ;; Found the PR node - extract body
+                              (forward-line 1)
+                              (let* ((body-start (point))
+                                     ;; Find end: next heading of same level or higher, or end of file
+                                     (body-end (if (re-search-forward
+                                                    (format "^\\*\\{1,%d\\}\\s-" level) nil t)
+                                                   (match-beginning 0)
+                                                 (point-max)))
+                                     (body (string-trim
+                                            (buffer-substring-no-properties body-start body-end))))
+                                (setq found (list :title (string-trim heading-title)
+                                                  :body (if (string-empty-p body) nil body))))))))))))
+              found))))))
 
 (defun org-roam-todo-wf-pr--get-pr-title (event)
   "Get the PR title for EVENT.
 Resolution order:
 1. Custom function from `org-roam-todo-wf-pr-title-function'
 2. PR node heading (heading with :ROAM_TYPE: pr)
-3. PR Title section from TODO file (legacy)
-4. TODO title as fallback"
+3. TODO title as fallback"
   (or (when org-roam-todo-wf-pr-title-function
         (funcall org-roam-todo-wf-pr-title-function event))
       (let ((file (org-roam-todo--resolve-file event)))
         (when file
-          ;; Try PR node first
           (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
             (when pr-node
               (plist-get pr-node :title)))))
-      ;; Legacy: PR Title section
-      (let ((file (org-roam-todo--resolve-file event)))
-        (when file
-          (let ((pr-title (org-roam-todo-get-file-section file "PR Title")))
-            (when (and pr-title (not (string-empty-p (string-trim pr-title))))
-              (string-trim pr-title)))))
       (org-roam-todo-prop event "TITLE")))
 
 (defun org-roam-todo-wf-pr--get-pr-body (event)
@@ -378,22 +412,14 @@ Resolution order:
 Resolution order:
 1. Custom function from `org-roam-todo-wf-pr-body-function'
 2. PR node content (heading with :ROAM_TYPE: pr)
-3. PR Description section from TODO file (legacy)
-4. Default body with TODO title/description"
+3. Default body with TODO title/description"
   (or (when org-roam-todo-wf-pr-body-function
         (funcall org-roam-todo-wf-pr-body-function event))
       (let ((file (org-roam-todo--resolve-file event)))
         (when file
-          ;; Try PR node first
           (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
             (when pr-node
               (plist-get pr-node :body)))))
-      ;; Legacy: PR Description section
-      (let ((file (org-roam-todo--resolve-file event)))
-        (when file
-          (let ((pr-body (org-roam-todo-get-file-section file "PR Description")))
-            (when (and pr-body (not (string-empty-p (string-trim pr-body))))
-              (string-trim pr-body)))))
       ;; Default fallback
       (let ((title (org-roam-todo-prop event "TITLE"))
             (description (org-roam-todo-prop event "DESCRIPTION")))
@@ -401,73 +427,77 @@ Resolution order:
                 (or description title)))))
 
 (defun org-roam-todo-wf-pr--require-pr-sections (event)
-  "Validate: PR node or PR Title/Description sections exist and are non-empty.
+  "Validate: PR node exists with title and description.
 EVENT is the workflow event context.
 Only validates if `org-roam-todo-wf-pr-require-pr-sections' is non-nil.
-Accepts either:
-- A PR node (heading with :ROAM_TYPE: pr property)
-- Legacy PR Title and PR Description sections"
+Requires a PR node (heading with :ROAM_TYPE: pr property) containing
+both a title (the heading text) and body (content under the heading)."
   (when org-roam-todo-wf-pr-require-pr-sections
     (let* ((file (org-roam-todo--resolve-file event))
            (pr-node (when file (org-roam-todo-wf-pr--get-pr-node file))))
-      ;; If PR node exists with both title and body, we're good
-      (if (and pr-node
-               (plist-get pr-node :title)
-               (plist-get pr-node :body))
-          t  ; Valid PR node found
-        ;; Otherwise check legacy sections
-        (let ((pr-title (when file (org-roam-todo-get-file-section file "PR Title")))
-              (pr-body (when file (org-roam-todo-get-file-section file "PR Description")))
-              (missing '()))
-          (unless (and pr-title (not (string-empty-p (string-trim pr-title))))
-            (push "PR Title" missing))
-          (unless (and pr-body (not (string-empty-p (string-trim pr-body))))
-            (push "PR Description" missing))
-          (when missing
-            (user-error "Missing required PR content. Either add a PR node (heading with :ROAM_TYPE: pr) or sections: %s"
-                        (string-join (nreverse missing) ", "))))))))
+      (unless pr-node
+        (user-error "Missing PR node. Use mcp__emacs__todo_pr_update to create PR title and description"))
+      (unless (plist-get pr-node :title)
+        (user-error "PR node has no title. Use mcp__emacs__todo_pr_update to set PR title"))
+      (unless (plist-get pr-node :body)
+        (user-error "PR node has no description. Use mcp__emacs__todo_pr_update to set PR description")))))
 
 ;;; ------------------------------------------------------------
 ;;; PR Workflow Hooks
 ;;; ------------------------------------------------------------
 
 (defun org-roam-todo-wf-pr--create-draft-pr (event)
-  "Create a draft PR for the TODO.
+  "Create a draft PR for the TODO, or update existing PR.
 EVENT is the workflow event context.
 Uses forge to create a draft PR targeting the rebase-target branch.
 Dispatches to the appropriate forge backend (GitHub, GitLab, etc.).
 Saves the PR number to the TODO's PR property for status tracking.
+If a PR already exists (detected via :PR: property or gh CLI), skips creation.
 Reads properties fresh from file."
   (let* ((workflow (org-roam-todo-event-workflow event))
          (todo-file (org-roam-todo--resolve-file event))
          (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
-         ;; Use the new helper functions for PR title and body
-         (title (org-roam-todo-wf-pr--get-pr-title event))
-         (body (org-roam-todo-wf-pr--get-pr-body event))
-         ;; Get target branch and strip remote prefix for PR API
-         (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
-         (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
-         (default-directory worktree-path)
-         (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
-         (repo-type (org-roam-todo-wf-pr--repo-type repo)))
-    ;; Dynamically bind the repo for the method to access
-    (let ((org-roam-todo-wf-pr--current-repo repo))
-      (org-roam-todo-wf-pr--create-pr
-       repo-type
-       title body target branch
-       t  ; draft-p
-       (lambda (data &rest _)
-         ;; Extract PR number from response and save to TODO
-         (let ((pr-number (or (alist-get 'number data)
-                              (alist-get 'iid data))))  ; GitLab uses 'iid'
-           (when (and pr-number todo-file)
-             (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
-             (message "Draft PR #%s created for %s" pr-number title)))
-         (forge--pull repo))
-       (lambda (&rest args)
-         (message "Failed to create PR: %S" args))))))
-
+         ;; Check if PR already exists
+         (existing-pr (org-roam-todo-wf-pr--get-pr-info event worktree-path)))
+    
+    (if existing-pr
+        ;; PR already exists - just update title/body instead of creating new
+        (let* ((pr-number (plist-get existing-pr :pr-number))
+               (title (org-roam-todo-wf-pr--get-pr-title event))
+               (body (org-roam-todo-wf-pr--get-pr-body event)))
+          (message "PR #%s already exists, updating title and description..." pr-number)
+          ;; Update the PR via org-roam-todo-wf-pr-feedback functions
+          (org-roam-todo-wf-pr-feedback--update-pr worktree-path title body)
+          ;; Ensure PR property is set
+          (when todo-file
+            (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number)))
+          (message "Updated PR #%s: %s" pr-number title))
+      
+      ;; No existing PR - create new draft PR
+      (let* ((title (org-roam-todo-wf-pr--get-pr-title event))
+             (body (org-roam-todo-wf-pr--get-pr-body event))
+             (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
+             (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
+             (default-directory worktree-path)
+             (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
+             (repo-type (org-roam-todo-wf-pr--repo-type repo)))
+        ;; Dynamically bind the repo for the method to access
+        (let ((org-roam-todo-wf-pr--current-repo repo))
+          (org-roam-todo-wf-pr--create-pr
+           repo-type
+           title body target branch
+           t  ; draft-p
+           (lambda (data &rest _)
+             ;; Extract PR number from response and save to TODO
+             (let ((pr-number (or (alist-get 'number data)
+                                  (alist-get 'iid data))))  ; GitLab uses 'iid'
+               (when (and pr-number todo-file)
+                 (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
+                 (message "Draft PR #%s created for %s" pr-number title)))
+             (forge--pull repo))
+           (lambda (&rest args)
+             (message "Failed to create PR: %S" args))))))))
 (defun org-roam-todo-wf-pr--mark-pr-ready (event)
   "Mark the draft PR as ready for review.
 Converts the PR from draft status to ready-for-review using forge.
@@ -481,14 +511,53 @@ Reads WORKTREE_PATH fresh from file."
     ;; Use forge's generic method to unset draft status
     (forge--set-topic-draft repo pullreq nil)))
 
-(defun org-roam-todo-wf-pr--get-pr-state (worktree-path)
+(defun org-roam-todo-wf-pr--mark-pr-ready-via-gh (worktree-path &optional pr-number)
+  "Mark a draft PR as ready for review using gh CLI.
+WORKTREE-PATH is the directory to run the command in.
+PR-NUMBER is optional - if not provided, uses current branch's PR."
+  (when worktree-path
+    (let* ((default-directory worktree-path)
+           (cmd (if pr-number
+                    (format "gh pr ready %s 2>&1" pr-number)
+                  "gh pr ready 2>&1"))
+           (result (shell-command-to-string cmd)))
+      (if (string-match-p "marked as ready" result)
+          (message "PR marked as ready for review")
+        (message "gh pr ready: %s" (string-trim result))))))
+(defun org-roam-todo-wf-pr--get-pr-state-via-gh (worktree-path &optional pr-number)
+  "Get PR state using gh CLI.
+WORKTREE-PATH is the directory to run the command in.
+PR-NUMBER is optional - if not provided, uses current branch's PR.
+Returns one of: merged, closed, open, or nil."
+  (when worktree-path
+    (let* ((default-directory worktree-path)
+           (cmd (if pr-number
+                    (format "gh pr view %s --json state -q .state 2>/dev/null" pr-number)
+                  "gh pr view --json state -q .state 2>/dev/null"))
+           (result (string-trim (shell-command-to-string cmd))))
+      (pcase result
+        ("MERGED" 'merged)
+        ("CLOSED" 'closed)
+        ("OPEN" 'open)
+        (_ nil)))))
+
+(defun org-roam-todo-wf-pr--get-pr-state (worktree-path &optional event)
   "Get the PR state for the current branch in WORKTREE-PATH.
-Returns one of: merged, rejected (closed), open, or nil if no PR exists."
+EVENT is optional workflow event for reading :PR: property.
+Returns one of: merged, closed, open, or nil if no PR exists.
+Tries forge first, then falls back to gh CLI with :PR: property."
   (let ((default-directory worktree-path))
-    (when-let ((pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
-      (condition-case nil
-          (funcall (intern "eieio-oref") pullreq 'state)
-        (error nil)))))
+    ;; Strategy 1: Try forge
+    (or (when-let ((pullreq (org-roam-todo-wf-pr--get-pullreq worktree-path)))
+          (condition-case nil
+              (funcall (intern "eieio-oref") pullreq 'state)
+            (error nil)))
+        ;; Strategy 2: Try gh CLI with PR number from property
+        (when event
+          (when-let ((pr-number (org-roam-todo-wf-pr--get-pr-number-from-props event)))
+            (org-roam-todo-wf-pr--get-pr-state-via-gh worktree-path pr-number)))
+        ;; Strategy 3: Try gh CLI with current branch
+        (org-roam-todo-wf-pr--get-pr-state-via-gh worktree-path))))
 
 ;;; ============================================================
 ;;; Watcher Poll Functions (for org-roam-todo-wf-watch)
@@ -529,11 +598,18 @@ Falls back to gh CLI for PR detection when forge doesn't know about the PR."
 (defun org-roam-todo-wf-pr--check-pr-merged (todo)
   "Check if TODO's PR has been merged.
 Returns \\='success if merged, \\='failure if closed without merge, \\='pending if open.
-Used by watchers to poll merge status and trigger auto-advancement."
-  (let ((worktree-path (plist-get todo :worktree-path)))
+Used by watchers to poll merge status and trigger auto-advancement.
+Uses :pr property from TODO if forge can't find the PR."
+  (let ((worktree-path (plist-get todo :worktree-path))
+        (pr-number (plist-get todo :pr)))
     (if worktree-path
         (condition-case nil
-            (let ((state (org-roam-todo-wf-pr--get-pr-state worktree-path)))
+            (let ((state (or (org-roam-todo-wf-pr--get-pr-state worktree-path)
+                             ;; Fallback to gh CLI with PR number
+                             (when pr-number
+                               (org-roam-todo-wf-pr--get-pr-state-via-gh
+                                worktree-path (if (stringp pr-number) pr-number
+                                                (number-to-string pr-number)))))))
               (pcase state
                 ('merged 'success)
                 ('closed 'failure)
@@ -636,9 +712,10 @@ HOW TO FIX:
   "Validate: PR has been merged.
 EVENT is the workflow event context.
 Checks forge PR state to confirm the PR is merged.
+Falls back to gh CLI if forge can't find the PR.
 Reads WORKTREE_PATH fresh from file."
   (let* ((worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
-         (state (when worktree-path (org-roam-todo-wf-pr--get-pr-state worktree-path))))
+         (state (when worktree-path (org-roam-todo-wf-pr--get-pr-state worktree-path event))))
     (pcase state
       ('merged nil)  ; validation passes
       ('closed (user-error "PR was closed without merging.
@@ -743,44 +820,71 @@ Performs rebase, push, create PR (ready), and request reviewers."
   (org-roam-todo-wf-pr--request-reviewers event))
 
 (defun org-roam-todo-wf-pr--create-ready-pr (event)
-  "Create a ready (non-draft) PR for the TODO.
+  "Create a ready (non-draft) PR for the TODO, or update existing PR.
 EVENT is the workflow event context.
-Uses forge to create a PR that's immediately ready for review."
+If a PR already exists (detected via :PR: property or gh CLI), updates it
+and marks it as ready for review instead of creating a new one."
   (let* ((workflow (org-roam-todo-event-workflow event))
          (todo-file (org-roam-todo--resolve-file event))
          (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
-         (title (org-roam-todo-wf-pr--get-pr-title event))
-         (body (org-roam-todo-wf-pr--get-pr-body event))
-         (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
-         (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
-         (default-directory worktree-path)
-         (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
-         (repo-type (org-roam-todo-wf-pr--repo-type repo)))
-    (let ((org-roam-todo-wf-pr--current-repo repo))
-      (org-roam-todo-wf-pr--create-pr
-       repo-type
-       title body target branch
-       nil  ; draft-p = nil for ready PR
-       (lambda (data &rest _)
-         (let ((pr-number (or (alist-get 'number data)
-                              (alist-get 'iid data))))
-           (when (and pr-number todo-file)
-             (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
-             (message "PR #%s created for %s" pr-number title)))
-         (forge--pull repo))
-       (lambda (&rest args)
-         (message "Failed to create PR: %S" args))))))
+         ;; Check if PR already exists
+         (existing-pr (org-roam-todo-wf-pr--get-pr-info event worktree-path)))
+
+    (if existing-pr
+        ;; PR already exists - update title/body and mark ready
+        (let* ((pr-number (plist-get existing-pr :pr-number))
+               (title (org-roam-todo-wf-pr--get-pr-title event))
+               (body (org-roam-todo-wf-pr--get-pr-body event)))
+          (message "PR #%s already exists, updating and marking ready for review..." pr-number)
+          ;; Update the PR title/body
+          (org-roam-todo-wf-pr-feedback--update-pr worktree-path title body)
+          ;; Mark PR as ready for review (not draft)
+          (org-roam-todo-wf-pr--mark-pr-ready-via-gh worktree-path pr-number)
+          ;; Ensure PR property is set
+          (when todo-file
+            (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number)))
+          (message "Updated PR #%s and marked ready: %s" pr-number title))
+
+      ;; No existing PR - create new ready PR
+      (let* ((title (org-roam-todo-wf-pr--get-pr-title event))
+             (body (org-roam-todo-wf-pr--get-pr-body event))
+             (target-raw (org-roam-todo-wf--get-target-branch-from-event event workflow))
+             (target (or (org-roam-todo-wf-pr--strip-remote-prefix target-raw) "main"))
+             (default-directory worktree-path)
+             (repo (org-roam-todo-wf-pr--get-forge-repo worktree-path))
+             (repo-type (org-roam-todo-wf-pr--repo-type repo)))
+        (let ((org-roam-todo-wf-pr--current-repo repo))
+          (org-roam-todo-wf-pr--create-pr
+           repo-type
+           title body target branch
+           nil  ; draft-p = nil for ready PR
+           (lambda (data &rest _)
+             (let ((pr-number (or (alist-get 'number data)
+                                  (alist-get 'iid data))))
+               (when (and pr-number todo-file)
+                 (org-roam-todo-set-file-property todo-file "PR" (number-to-string pr-number))
+                 (message "PR #%s created for %s" pr-number title)))
+             (forge--pull repo))
+           (lambda (&rest args)
+             (message "Failed to create PR: %S" args))))))))
 
 (defun org-roam-todo-wf-pr--check-review-status (todo)
   "Check overall review status for TODO.
 Returns \\='success if PR is merged, \\='failure if CI failed or PR closed,
 \\='pending otherwise.
-Used by watchers to poll status and trigger auto-advancement."
-  (let ((worktree-path (plist-get todo :worktree-path)))
+Used by watchers to poll status and trigger auto-advancement.
+Uses :pr property from TODO if forge can't find the PR."
+  (let ((worktree-path (plist-get todo :worktree-path))
+        (pr-number (plist-get todo :pr)))
     (if worktree-path
         (condition-case nil
-            (let* ((pr-state (org-roam-todo-wf-pr--get-pr-state worktree-path))
+            (let* ((pr-state (or (org-roam-todo-wf-pr--get-pr-state worktree-path)
+                                 ;; Fallback to gh CLI with PR number
+                                 (when pr-number
+                                   (org-roam-todo-wf-pr--get-pr-state-via-gh
+                                    worktree-path (if (stringp pr-number) pr-number
+                                                    (number-to-string pr-number))))))
                    (ci-status (org-roam-todo-wf-pr--check-ci-status todo)))
               (cond
                ;; PR merged = success

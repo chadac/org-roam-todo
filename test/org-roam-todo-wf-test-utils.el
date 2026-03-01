@@ -556,6 +556,10 @@ CLEAN-P  - whether the worktree is clean (no uncommitted changes)"
   (unless (featurep 'org-roam-todo-status)
     (ert-skip "org-roam-todo-status not loaded")))
 
+(defun org-roam-todo-wf-test--require-tools ()
+  "Skip test if org-roam-todo-wf-tools is not loaded."
+  (unless (featurep 'org-roam-todo-wf-tools)
+    (ert-skip "org-roam-todo-wf-tools not loaded")))
 ;;; ============================================================
 ;;; Always Helper (for mocker)
 ;;; ============================================================

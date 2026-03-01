@@ -594,34 +594,42 @@ Key: file path, Value: (pr-title . pr-body)")
 
 (defun org-roam-todo-wf-pr-feedback--get-sections (file)
   "Get PR title and description from FILE.
-Returns (title . body) cons cell.
-First tries to get from PR node (heading with :ROAM_TYPE: pr),
-then falls back to legacy PR Title/PR Description sections."
+First checks for a separate PR file (todo-name-pr.org).
+Falls back to PR node (heading with :ROAM_TYPE: pr) in TODO file.
+Returns (title . body) cons cell, or nil if no PR content found."
   (when (and file (file-exists-p file))
-    ;; Try PR node first
     (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
-      (if pr-node
-          (cons (plist-get pr-node :title)
-                (plist-get pr-node :body))
-        ;; Fall back to legacy sections
-        (cons (org-roam-todo-get-file-section file "PR Title")
-              (org-roam-todo-get-file-section file "PR Description"))))))
+      (when pr-node
+        (cons (plist-get pr-node :title)
+              (plist-get pr-node :body))))))
+
+(defun org-roam-todo-wf-pr-feedback--looks-like-markdown-p (text)
+  "Check if TEXT appears to be markdown rather than org-mode.
+Returns t if TEXT has markdown headings (## ) but no org headings (* )."
+  (and text
+       (string-match-p "^##+ " text)
+       (not (string-match-p "^\\*+ " text))))
 
 (defun org-roam-todo-wf-pr-feedback--org-to-markdown (text)
   "Convert TEXT from org-mode format to GitHub-flavored markdown.
+If TEXT already appears to be markdown, returns it as-is.
 Returns the converted markdown string."
   (when text
-    (let ((org-export-with-toc nil)
-          (org-export-with-section-numbers nil)
-          (org-export-with-author nil)
-          (org-export-with-date nil)
-          (org-export-with-title nil)
-          (org-export-headline-levels 6))
-      (with-temp-buffer
-        (insert text)
-        (org-mode)
-        (let ((result (org-export-as 'md nil nil t)))
-          (string-trim result))))))
+    ;; If it already looks like markdown, return as-is
+    (if (org-roam-todo-wf-pr-feedback--looks-like-markdown-p text)
+        (string-trim text)
+      ;; Otherwise convert from org to markdown
+      (let ((org-export-with-toc nil)
+            (org-export-with-section-numbers nil)
+            (org-export-with-author nil)
+            (org-export-with-date nil)
+            (org-export-with-title nil)
+            (org-export-headline-levels 6))
+        (with-temp-buffer
+          (insert text)
+          (org-mode)
+          (let ((result (org-export-as 'md nil nil t)))
+            (string-trim result)))))))
 
 (defun org-roam-todo-wf-pr-feedback--update-pr-gh (worktree-path title body)
   "Update PR title and body using gh CLI.

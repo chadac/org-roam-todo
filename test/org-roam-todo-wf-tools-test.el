@@ -546,5 +546,97 @@ Test task description.
     (org-roam-todo-wf-tools-test--cleanup)))
 
 
+;;; ============================================================
+;;; PR Update MCP Tool Tests
+;;; ============================================================
+
+(ert-deftest wf-tools-test-pr-update-creates-pr-file ()
+  "Test todo-pr-update creates a separate PR file."
+  :tags '(:unit :wf :tools :pr-update)
+  (org-roam-todo-wf-test--require-tools)
+  (let* ((temp-data (org-roam-todo-wf-tools-test--create-temp-todo
+                     '(:status "active")))
+         (todo-file (plist-get temp-data :file))
+         (todo (plist-get temp-data :todo))
+         (pr-file (concat (file-name-sans-extension todo-file) "-pr.org")))
+    (unwind-protect
+        (progn
+          ;; Mock the TODO resolution
+          (cl-letf (((symbol-function 'org-roam-todo-wf-tools--get-todo)
+                     (lambda (_id) todo)))
+            (org-roam-todo-wf-tools-pr-update "My PR Title" "My PR description"))
+          ;; Verify PR file was created
+          (should (file-exists-p pr-file))
+          ;; Read and verify content
+          (with-temp-buffer
+            (insert-file-contents pr-file)
+            (should (string-match-p "\\+title: Pull Request: My PR Title" (buffer-string)))
+            (should (string-match-p "My PR description" (buffer-string)))))
+      (org-roam-todo-wf-tools-test--cleanup))))
+
+(ert-deftest wf-tools-test-pr-update-replaces-existing ()
+  "Test todo-pr-update replaces existing PR file content."
+  :tags '(:unit :wf :tools :pr-update)
+  (org-roam-todo-wf-test--require-tools)
+  (let* ((temp-data (org-roam-todo-wf-tools-test--create-temp-todo
+                     '(:status "active")))
+         (todo-file (plist-get temp-data :file))
+         (todo (plist-get temp-data :todo))
+         (pr-file (concat (file-name-sans-extension todo-file) "-pr.org")))
+    (unwind-protect
+        (progn
+          ;; Create initial PR file
+          (with-temp-file pr-file
+            (insert "#+title: Old Title\n\nOld description.\n"))
+          ;; Mock the TODO resolution and update
+          (cl-letf (((symbol-function 'org-roam-todo-wf-tools--get-todo)
+                     (lambda (_id) todo)))
+            (org-roam-todo-wf-tools-pr-update "New Title" "New description"))
+          ;; Read and verify new content replaced old
+          (with-temp-buffer
+            (insert-file-contents pr-file)
+            (should (string-match-p "\\+title: Pull Request: New Title" (buffer-string)))
+            (should (string-match-p "New description" (buffer-string)))
+            (should-not (string-match-p "Old Title" (buffer-string)))
+            (should-not (string-match-p "Old description" (buffer-string)))))
+      (org-roam-todo-wf-tools-test--cleanup))))
+
+(ert-deftest wf-tools-test-pr-update-empty-title-error ()
+  "Test todo-pr-update errors with empty title."
+  :tags '(:unit :wf :tools :pr-update)
+  (org-roam-todo-wf-test--require-tools)
+  (let* ((temp-data (org-roam-todo-wf-tools-test--create-temp-todo
+                     '(:status "active")))
+         (todo (plist-get temp-data :todo)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'org-roam-todo-wf-tools--get-todo)
+                   (lambda (_id) todo)))
+          (should-error (org-roam-todo-wf-tools-pr-update "" "Some body")
+                        :type 'user-error)
+          (should-error (org-roam-todo-wf-tools-pr-update "   " "Some body")
+                        :type 'user-error))
+      (org-roam-todo-wf-tools-test--cleanup))))
+
+(ert-deftest wf-tools-test-pr-update-nil-body ()
+  "Test todo-pr-update works with nil body."
+  :tags '(:unit :wf :tools :pr-update)
+  (org-roam-todo-wf-test--require-tools)
+  (let* ((temp-data (org-roam-todo-wf-tools-test--create-temp-todo
+                     '(:status "active")))
+         (todo-file (plist-get temp-data :file))
+         (todo (plist-get temp-data :todo))
+         (pr-file (concat (file-name-sans-extension todo-file) "-pr.org")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'org-roam-todo-wf-tools--get-todo)
+                     (lambda (_id) todo)))
+            (org-roam-todo-wf-tools-pr-update "Title Only" nil))
+          ;; Verify PR file was created with title only
+          (should (file-exists-p pr-file))
+          (with-temp-buffer
+            (insert-file-contents pr-file)
+            (should (string-match-p "\\+title: Pull Request: Title Only" (buffer-string)))))
+      (org-roam-todo-wf-tools-test--cleanup))))
+
 (provide 'org-roam-todo-wf-tools-test)
 ;;; org-roam-todo-wf-tools-test.el ends here

@@ -325,7 +325,7 @@ it will return that forge type even without a remote. This is intentional."
 ;;; ============================================================
 
 (ert-deftest wf-pr-feedback-test-get-sections ()
-  "Test extracting PR title and description from legacy sections."
+  "Test extracting PR title and description from PR node."
   :tags '(:unit :wf :pr-feedback :auto-update)
   (require 'org-roam-todo-wf-pr-feedback nil t)
   (require 'org-roam-todo-wf-pr nil t)
@@ -334,8 +334,10 @@ it will return that forge type even without a remote. This is intentional."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Title\n\nFix: Important bug fix\n\n")
-            (insert "** PR Description\n\nThis fixes an important bug.\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix: Important bug fix\n")
+            (insert ":PROPERTIES:\n:ID: pr-123\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "This fixes an important bug.\n"))
           (let ((sections (org-roam-todo-wf-pr-feedback--get-sections temp-file)))
             (should sections)
             (should (string-match-p "Important bug fix" (car sections)))
@@ -387,8 +389,8 @@ it will return that forge type even without a remote. This is intentional."
             (should (string-match-p "Node description" (cdr sections)))))
       (delete-file temp-file))))
 
-(ert-deftest wf-pr-feedback-test-get-sections-missing-title ()
-  "Test extracting sections when PR Title is missing (legacy)."
+(ert-deftest wf-pr-feedback-test-get-sections-missing-body ()
+  "Test extracting sections when PR node has no body."
   :tags '(:unit :wf :pr-feedback :auto-update)
   (require 'org-roam-todo-wf-pr-feedback nil t)
   (require 'org-roam-todo-wf-pr nil t)
@@ -397,11 +399,13 @@ it will return that forge type even without a remote. This is intentional."
         (progn
           (with-temp-file temp-file
             (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
-            (insert "** PR Description\n\nThis fixes an important bug.\n"))
+            (insert "** Pull Request Details\n")
+            (insert "*** Title Only\n")
+            (insert ":PROPERTIES:\n:ID: pr-123\n:ROAM_TYPE: pr\n:END:\n"))
           (let ((sections (org-roam-todo-wf-pr-feedback--get-sections temp-file)))
             (should sections)
-            (should-not (car sections))  ; No title
-            (should (cdr sections))))    ; Has description
+            (should (car sections))       ; Has title
+            (should-not (cdr sections)))) ; No body
       (delete-file temp-file))))
 
 (ert-deftest wf-pr-feedback-test-auto-update-setup ()

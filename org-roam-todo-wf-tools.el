@@ -63,15 +63,21 @@ Otherwise searches by title or ID."
                   todos)))))
 
 (defun org-roam-todo-wf-tools--get-todo-from-worktree ()
-  "Find TODO associated with the current worktree directory."
-  (let* ((cwd (directory-file-name (expand-file-name default-directory)))
-         (todos (org-roam-todo--query-todos)))
-    (cl-find-if
-     (lambda (todo)
-       (let ((wpath (plist-get todo :worktree-path)))
-         (and wpath
-              (string= (directory-file-name (expand-file-name wpath)) cwd))))
-     todos)))
+  "Find TODO associated with the current context.
+First checks if we\='re in a TODO status buffer.
+Then falls back to finding TODO by current worktree directory."
+  ;; First check if we're in a status buffer with a TODO
+  (or (and (boundp 'org-roam-todo-status--todo)
+           org-roam-todo-status--todo)
+      ;; Fall back to worktree detection
+      (let* ((cwd (directory-file-name (expand-file-name default-directory)))
+             (todos (org-roam-todo--query-todos)))
+        (cl-find-if
+         (lambda (todo)
+           (let ((wpath (plist-get todo :worktree-path)))
+             (and wpath
+                  (string= (directory-file-name (expand-file-name wpath)) cwd))))
+         todos))))
 
 (defun org-roam-todo-wf-tools--parse-todo-file (file)
   "Parse TODO properties from FILE and return as plist."
@@ -838,35 +844,158 @@ Log tail:
                   (mapconcat #'identity (nreverse result) "\n"))))))))
 
 
-(defun org-roam-todo-wf-tools-pr-update (&optional todo-id)
-  "Update the PR title and description from the TODO's PR node.
+(defun org-roam-todo-wf-tools--get-pr-file (todo-file)
+  "Get the PR file path for TODO-FILE.
+Creates the file if it doesn't exist. Returns the path."
+  (let* ((dir (file-name-directory todo-file))
+         (base (file-name-base todo-file))
+         (pr-file (expand-file-name (concat base "-pr.org") dir)))
+    pr-file))
+
+(defun org-roam-todo-wf-tools--write-pr-file (pr-file title body todo-file)
+  "Write PR content to PR-FILE with TITLE and BODY.
+TODO-FILE is the parent TODO file (used for backlink).
+Creates a valid org-roam node with proper properties."
+  (let ((pr-id (org-id-uuid))
+        (todo-id (when todo-file
+                   (org-roam-todo-get-file-property todo-file "ID"))))
+    (with-temp-file pr-file
+      ;; Properties drawer first (valid org-roam node)
+      (insert ":PROPERTIES:\n")
+      (insert (format ":ID: %s\n" pr-id))
+      (insert ":ROAM_TYPE: pr\n")
+      (when todo-id
+        (insert (format ":PARENT_TODO: %s\n" todo-id)))
+      (insert ":END:\n")
+      ;; Title with "Pull Request:" prefix for searchability
+      (insert (format "#+title: Pull Request: %s\n\n" title))
+      ;; Backlink to parent TODO
+      (when todo-id
+        (insert (format "Parent TODO: [[id:%s]]\n\n" todo-id)))
+      ;; Body content
+      (when (and body (not (string-empty-p body)))
+        (insert body)
+        (unless (string-suffix-p "\n" body)
+          (insert "\n"))))
+    pr-id))
+(defun org-roam-todo-wf-tools--add-pr-link-to-todo (todo-file pr-file pr-id)
+  "Add a link to PR-FILE in TODO-FILE.
+PR-ID is the org-roam ID of the PR node."
+  (when (and todo-file (file-exists-p todo-file))
+    (with-current-buffer (find-file-noselect todo-file)
+      (save-excursion
+        (goto-char (point-min))
+        ;; Look for existing PR link section or create one
+        (if (re-search-forward "^\\*\\* Pull Request$" nil t)
+            ;; Update existing section
+            (progn
+              (forward-line 1)
+              ;; Delete old link if present
+              (when (looking-at "\\[\\[id:")
+                (delete-region (point) (line-end-position))
+                (delete-char 1))
+              (insert (format "[[id:%s][%s]]\n"
+                              pr-id
+                              (file-name-nondirectory pr-file))))
+          ;; Create new section before Progress Log
+          (goto-char (point-min))
+          (if (re-search-forward "^\\*\\* Progress Log" nil t)
+              (progn
+                (beginning-of-line)
+                (insert "** Pull Request\n")
+                (insert (format "[[id:%s][%s]]\n\n"
+                                pr-id
+                                (file-name-nondirectory pr-file))))
+            ;; No Progress Log section, add at end
+            (goto-char (point-max))
+            (insert "\n** Pull Request\n")
+            (insert (format "[[id:%s][%s]]\n"
+                            pr-id
+                            (file-name-nondirectory pr-file))))))
+      (save-buffer))))
+
+(defun org-roam-todo-wf-tools--read-pr-file (pr-file)
+  "Read PR content from PR-FILE.
+Returns (title . body) cons cell, or nil if file doesn\='t exist.
+Strips \='Pull Request: \=' prefix from title if present."
+  (when (file-exists-p pr-file)
+    (with-temp-buffer
+      (insert-file-contents pr-file)
+      (goto-char (point-min))
+      (let ((title nil)
+            (body nil))
+        ;; Skip properties drawer
+        (when (looking-at ":PROPERTIES:")
+          (re-search-forward "^:END:" nil t)
+          (forward-line 1))
+        ;; Find title
+        (when (re-search-forward "^#\\+title:\\s-*\\(Pull Request:\\s-*\\)?\\(.+\\)$" nil t)
+          (setq title (string-trim (match-string 2))))
+        (forward-line 1)
+        ;; Skip blank lines and parent link
+        (while (and (not (eobp))
+                    (or (looking-at "^$")
+                        (looking-at "^Parent TODO:")))
+          (forward-line 1))
+        (setq body (string-trim (buffer-substring-no-properties (point) (point-max))))
+        (when (string-empty-p body) (setq body nil))
+        (cons title body)))))
+
+(defun org-roam-todo-wf-tools-pr-update (title body &optional todo-id)
+  "Update the TODO's PR file with TITLE and BODY.
 TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
-Reads the PR title and description from the TODO file and pushes
-them to the remote PR/MR using gh or glab CLI."
+Creates a separate PR file (todo-name-pr.org) with the PR content.
+Also adds a link to the PR file in the TODO file."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (file (and todo (plist-get todo :file))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless file
+      (user-error "TODO has no file"))
+    (unless (and title (not (string-empty-p (string-trim title))))
+      (user-error "PR title cannot be empty"))
+    
+    ;; Write to separate PR file
+    (let* ((pr-file (org-roam-todo-wf-tools--get-pr-file file))
+           (pr-id (org-roam-todo-wf-tools--write-pr-file pr-file title body file)))
+      ;; Add link to TODO file
+      (org-roam-todo-wf-tools--add-pr-link-to-todo file pr-file pr-id)
+      (format "PR content saved to: %s\nTitle: %s\nDescription: %s\nLink added to TODO file."
+              pr-file
+              title
+              (if body
+                  (if (> (length body) 100)
+                      (concat (substring body 0 100) "...")
+                    body)
+                "(empty)")))))
+
+(defun org-roam-todo-wf-tools-pr-push (&optional todo-id)
+  "Push the PR title and description to the remote forge.
+TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
+Reads the PR node from the TODO file and pushes to GitHub/GitLab."
+  (interactive)
   (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
          (file (and todo (plist-get todo :file)))
-         (worktree-path (and todo (plist-get todo :worktree-path)))
-         (status (and todo (plist-get todo :status))))
+         (worktree-path (and todo (plist-get todo :worktree-path))))
     (unless todo
       (user-error "TODO not found: %s" (or todo-id "current directory")))
     (unless worktree-path
       (user-error "TODO has no worktree"))
-    (unless (member status '("ci" "ready" "review"))
-      (user-error "TODO must be in ci, ready, or review status to update PR (current: %s)" status))
     
     (require 'org-roam-todo-wf-pr-feedback)
     
     (let ((sections (org-roam-todo-wf-pr-feedback--get-sections file)))
       (unless sections
-        (user-error "Could not read PR sections from TODO file"))
+        (user-error "No PR node found. Use mcp__emacs__todo_pr_update first"))
       (let ((title (car sections))
             (body (cdr sections)))
         (unless (and title (not (string-empty-p (string-trim title))))
-          (user-error "PR title is empty. Add content to the PR node heading."))
+          (user-error "PR title is empty"))
         (org-roam-todo-wf-pr-feedback--update-pr worktree-path title body)
         ;; Invalidate cache since we updated the PR
         (org-roam-todo-wf-pr-feedback-invalidate-cache worktree-path)
-        (format "PR updated successfully.\nTitle: %s\nDescription: %s"
+        (message "PR pushed to remote: %s" title)
+        (format "PR pushed to remote successfully.\nTitle: %s\nDescription: %s"
                 title
                 (if body
                     (if (> (length body) 100)
@@ -1028,25 +1157,24 @@ Use this to:
                  (check-name string "Optional: specific check name to view logs for")))
 
         (claude-mcp-deftool todo-pr-update
-          "Update the PR title and description from the TODO's PR node.
-Reads the PR title (from the PR node heading) and description (from the
-PR node body) and pushes them to the remote PR/MR.
+          "Update the PR title and description for a TODO.
+Creates a separate PR file (todo-name-pr.org) with the PR content.
 
-The PR node is a heading with :ROAM_TYPE: pr property:
-  ** Pull Request Details
-  *** My PR Title Here
-  :PROPERTIES:
-  :ID: ...
-  :ROAM_TYPE: pr
-  :END:
+The PR file is a simple org file:
+  #+title: My PR Title Here
 
-  PR description goes here...
+  PR description goes here in org format...
 
-Use this to manually sync your TODO's PR content to GitHub/GitLab."
+Use this to set the PR title and description before advancing to review.
+When todo-advance is called to enter review status, the PR content is
+automatically pushed to GitHub/GitLab."
           :function #'org-roam-todo-wf-tools-pr-update
           :safe t
           :needs-session-cwd t
-          :args ((todo-id string "Optional: TODO file path, title, or ID")))
+          :args ((title string :required "The PR title")
+                 (body string "The PR description/body in org format")
+                 (todo-id string "Optional: TODO file path, title, or ID")))
+
 
         (claude-mcp-deftool todo-add-progress
           "Add an entry to the TODO's progress log.
