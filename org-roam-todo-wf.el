@@ -345,9 +345,23 @@ Transition flow:
       ;; Handle both old format and new format with :priority/:function/:result
       (cl-loop for result in (plist-get validation-results :results)
                for status = (org-roam-todo-wf--extract-result-status result)
-               for msg = (if (plist-get result :result)
-                            (cadr (plist-get result :result))
-                          (cadr result))
+               for inner = (plist-get result :result)
+               ;; Extract error message from the result
+               ;; New format: (:priority N :function F :result (:fail "msg"))
+               ;; Old format: (:fail "msg") directly
+               ;; Note: inner could be :pass (symbol) or (:fail "msg") (list)
+               for msg = (cond
+                          ;; New format: inner is (:fail "msg") or (:error "msg")
+                          ((and inner (listp inner)
+                                (memq (car inner) '(:fail :error)))
+                           (cadr inner))
+                          ;; Old format: result itself is (:fail "msg") - NOT a plist
+                          ((and (listp result) 
+                                (not (plist-get result :priority))
+                                (memq (car result) '(:fail :error)))
+                           (cadr result))
+                          ;; No message available (e.g., :pass or :pending)
+                          (t nil))
                when (memq status '(:fail :error))
                do (user-error "Validation failed: %s" msg))
 
