@@ -128,7 +128,7 @@ TITLE, BODY, TARGET, HEAD, DRAFT-P, CALLBACK, ERRORBACK: see generic."
                  (body body)
                  (base target)
                  (head head)
-                 (draft (if draft-p t json-false))
+                 (draft (if draft-p t nil))
                  (maintainer_can_modify t))
                 :callback callback
                 :errorback errorback)))
