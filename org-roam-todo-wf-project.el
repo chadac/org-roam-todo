@@ -328,7 +328,7 @@ MESSAGE is displayed while pending."
            project-root validation-name commit-sha worktree-hash :pass "Passed")
         (org-roam-todo-wf-project--set-async-result
          project-root validation-name commit-sha worktree-hash :fail
-         (format "Failed (exit %d). Run manually for details." exit-code)))
+         (format "Failed (exit %d):\n\n%s" exit-code (string-trim output))))
       ;; Clean up buffer
       (kill-buffer output-buffer)
       ;; Refresh only the relevant status buffer for this project

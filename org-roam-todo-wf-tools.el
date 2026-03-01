@@ -470,7 +470,7 @@ Please review the task and acceptance criteria, then begin working on it."
       (save-buffer))))
 
 ;;; ============================================================
-;;; Async Status Watching
+;;; Async Validation Watching
 ;;; ============================================================
 
 (defvar org-roam-todo-wf-tools--watch-tasks (make-hash-table :test 'equal)
@@ -478,7 +478,9 @@ Please review the task and acceptance criteria, then begin working on it."
 Key: task-id, Value: plist with :todo-id :start-time :iteration :timer")
 
 (defun org-roam-todo-wf-tools--watch-poll (task-id)
-  "Poll TODO status for TASK-ID and apply auto-upgrade if ready.
+  "Poll TODO validations for TASK-ID.
+Exits immediately if any validation fails.
+Exits when all validations complete (no pending).
 This function is called periodically by a timer."
   (let* ((state (gethash task-id org-roam-todo-wf-tools--watch-tasks))
          (todo-id (plist-get state :todo-id))
@@ -496,11 +498,11 @@ This function is called periodically by a timer."
         (cancel-timer (plist-get state :timer)))
       (remhash task-id org-roam-todo-wf-tools--watch-tasks)
       (claude-mcp-async-complete task-id
-                                 (format "Watch timeout after %d seconds. TODO did not auto-upgrade."
+                                 (format "Watch timeout after %d seconds. Validations did not complete."
                                          timeout-secs))
       (cl-return-from org-roam-todo-wf-tools--watch-poll))
 
-    ;; Try to resolve the TODO
+    ;; Try to resolve the TODO and check validations
     (condition-case err
         (let ((todo (org-roam-todo-wf-tools--get-todo todo-id)))
           (unless todo
@@ -511,87 +513,102 @@ This function is called periodically by a timer."
                                     (format "TODO not found: %s" todo-id))
             (cl-return-from org-roam-todo-wf-tools--watch-poll))
 
-          (let* ((todo-file (plist-get todo :file))
-                 (current-status (plist-get todo :status))
-                 (initial-status (plist-get state :initial-status)))
+          (let* ((current-status (plist-get todo :status))
+                 (workflow (org-roam-todo-wf--get-workflow todo))
+                 (statuses (org-roam-todo-workflow-statuses workflow))
+                 (idx (cl-position current-status statuses :test #'string=))
+                 (next-status (when (and idx (< idx (1- (length statuses))))
+                                (nth (1+ idx) statuses))))
 
-            ;; Check if status changed (someone manually changed it, or auto-upgrade happened)
-            (when (not (string= current-status initial-status))
+            ;; If no next status, we're at terminal - nothing to validate
+            (unless next-status
               (when (plist-get state :timer)
                 (cancel-timer (plist-get state :timer)))
               (remhash task-id org-roam-todo-wf-tools--watch-tasks)
-              (claude-mcp-async-complete 
+              (claude-mcp-async-complete
                task-id
-               (format "TODO status changed: %s -> %s\nElapsed: %.0fs"
-                       initial-status current-status elapsed))
+               (format "TODO is at terminal status '%s' - no validations to run."
+                       current-status))
               (cl-return-from org-roam-todo-wf-tools--watch-poll))
 
-            ;; Check if auto-upgrade is ready
-            (let* ((check-result (org-roam-todo-wf-check-auto-upgrade todo-file current-status))
-                   (result-state (plist-get check-result :state)))
-              (if (plist-get check-result :can-upgrade)
-                  ;; Apply the upgrade
-                  (let ((apply-result (org-roam-todo-wf-apply-auto-upgrade todo-file)))
-                    (when (plist-get state :timer)
-                      (cancel-timer (plist-get state :timer)))
-                    (remhash task-id org-roam-todo-wf-tools--watch-tasks)
-                    (if (plist-get apply-result :applied)
-                        (claude-mcp-async-complete 
-                         task-id
-                         (format "Auto-upgrade applied: %s -> %s\n\nAction: %s\nState: %s\nElapsed: %.0fs\n\n%s"
-                                 current-status
-                                 (plist-get check-result :target-status)
-                                 (plist-get check-result :action)
-                                 (plist-get check-result :state)
-                                 elapsed
-                                 (or (plist-get check-result :message) "")))
-                      (claude-mcp-async-error 
-                       task-id
-                       (format "Auto-upgrade check succeeded but apply failed: %s"
-                               (or (plist-get apply-result :message) "unknown error")))))
-                ;; Check for terminal states that should stop polling
-                (cond
-                 ;; Failed validation with no on-fail configured - terminal state
-                 ((and (eq result-state :fail)
-                       (not (plist-get check-result :can-upgrade)))
-                  (when (plist-get state :timer)
-                    (cancel-timer (plist-get state :timer)))
-                  (remhash task-id org-roam-todo-wf-tools--watch-tasks)
-                  (claude-mcp-async-complete
-                   task-id
-                   (format "Validation failed (no auto-downgrade configured)\n\nState: %s\nElapsed: %.0fs\n\n%s"
-                           result-state
-                           elapsed
-                           (or (plist-get check-result :message) ""))))
-                 ;; Feedback required - terminal state
-                 ((eq result-state :feedback)
-                  (when (plist-get state :timer)
-                    (cancel-timer (plist-get state :timer)))
-                  (remhash task-id org-roam-todo-wf-tools--watch-tasks)
-                  (claude-mcp-async-complete
-                   task-id
-                   (format "User feedback required\n\nState: %s\nElapsed: %.0fs\n\n%s"
-                           result-state
-                           elapsed
-                           (or (plist-get check-result :message) ""))))
-                 ;; Still pending - continue polling
-                 (t
-                  (message "[%d] TODO watch: status=%s state=%s (%.0fs elapsed)"
-                           iteration current-status result-state elapsed)))))))
+            ;; Run validations for the next status
+            (let* ((event (make-org-roam-todo-event
+                           :todo todo
+                           :workflow workflow
+                           :old-status current-status
+                           :new-status next-status
+                           :type (intern (format ":validate-%s" next-status))
+                           :actor 'ai))
+                   (results (org-roam-todo-wf--dispatch-event event))
+                   (result-list (plist-get results :results))
+                   (has-pending nil)
+                   (has-fail nil)
+                   (fail-messages '())
+                   (pass-count 0)
+                   (pending-count 0)
+                   (fail-count 0))
+
+              ;; Categorize results
+              (dolist (result result-list)
+                (let* ((status (org-roam-todo-wf--extract-result-status result))
+                       (inner (plist-get result :result))
+                       (msg (when (and inner (listp inner) (memq (car inner) '(:fail :error :pending)))
+                              (cadr inner))))
+                  (pcase status
+                    (:pass (cl-incf pass-count))
+                    (:pending (setq has-pending t) (cl-incf pending-count))
+                    ((or :fail :error)
+                     (setq has-fail t)
+                     (cl-incf fail-count)
+                     (when msg (push msg fail-messages))))))
+
+              ;; Refresh status buffer to show current validation state
+              (when-let ((worktree-path (plist-get todo :worktree-path)))
+                (when (featurep 'org-roam-todo-wf-project)
+                  (org-roam-todo-wf-project--refresh-status-buffer-for-project worktree-path)))
+
+              ;; Exit immediately if any validation failed
+              (when has-fail
+                (when (plist-get state :timer)
+                  (cancel-timer (plist-get state :timer)))
+                (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+                (claude-mcp-async-complete
+                 task-id
+                 (format "Validation FAILED: %d passed, %d failed\n\nElapsed: %.0fs\n\nFailed:\n%s"
+                         pass-count fail-count elapsed
+                         (mapconcat (lambda (m) (format "- %s" m)) (nreverse fail-messages) "\n")))
+                (cl-return-from org-roam-todo-wf-tools--watch-poll))
+
+              ;; Check if all validations are complete (no pending)
+              (if has-pending
+                  ;; Still pending - continue polling
+                  (message "[%d] Validations: %d pass, %d pending (%.0fs elapsed)"
+                           iteration pass-count pending-count elapsed)
+                ;; All complete and passed
+                (when (plist-get state :timer)
+                  (cancel-timer (plist-get state :timer)))
+                (remhash task-id org-roam-todo-wf-tools--watch-tasks)
+                (claude-mcp-async-complete
+                 task-id
+                 (format "All validations passed! (%d total)\n\nElapsed: %.0fs\n\nYou can now run `todo-advance` to advance the TODO."
+                         pass-count elapsed))))))
       (error
        (when (plist-get state :timer)
          (cancel-timer (plist-get state :timer)))
        (remhash task-id org-roam-todo-wf-tools--watch-tasks)
        (claude-mcp-async-error task-id
-                               (format "Error checking TODO status: %s"
+                               (format "Error checking TODO validations: %s"
                                        (error-message-string err)))))))
 
-(defun org-roam-todo-wf-tools--watch-status (task-id server-port todo-id 
-                                                     &optional poll-interval timeout)
-  "Watch TODO-ID's status until auto-upgrade completes or times out (async).
+(defun org-roam-todo-wf-tools--watch (task-id server-port todo-id
+                                              &optional poll-interval timeout)
+  "Watch TODO-ID validations until complete or failed (async).
 TASK-ID and SERVER-PORT are provided by the MCP async framework.
-POLL-INTERVAL defaults to 5 seconds (suitable for async validations).
+POLL-INTERVAL defaults to 5 seconds.
 TIMEOUT defaults to 3600 seconds (1 hour).
+
+Exits immediately if any validation fails.
+Exits when all validations complete (no pending).
 
 Returns :async-started immediately and polls in the background."
   (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
@@ -600,11 +617,10 @@ Returns :async-started immediately and polls in the background."
     
     (unless todo
       (claude-mcp-async-error task-id (format "TODO not found: %s" todo-id))
-      (cl-return-from org-roam-todo-wf-tools--watch-status :async-started))
+      (cl-return-from org-roam-todo-wf-tools--watch :async-started))
 
     (let* ((current-status (plist-get todo :status))
            (state (list :todo-id todo-id
-                       :initial-status current-status
                        :start-time (float-time)
                        :timeout timeout-secs
                        :poll-interval poll-secs
@@ -868,19 +884,20 @@ After creating, use todo-start to begin working on it (creates worktree)."
                  (acceptance-criteria array "List of acceptance criteria strings")
                  (model string "Claude model for worktree agent: opus, sonnet (default: opus)")))
 
-        (claude-mcp-deftool todo-watch-status
-          "Watch a TODO's status until auto-upgrade completes or times out.
-Polls validations and applies auto-upgrade when ready.
-Returns when the TODO advances/regresses or timeout is reached.
+        (claude-mcp-deftool todo-watch
+          "Watch TODO validations until all complete or any fails.
+Polls all validations for the next status transition.
 
-This is useful for monitoring async validations like CI checks.
-The tool will automatically apply transitions when validation state changes."
+Exits immediately if any validation fails.
+Exits when all validations complete (no more pending).
+
+Use this to wait for async validations like byte-compilation or tests."
           :async t
           :timeout 3600
-          :function #'org-roam-todo-wf-tools--watch-status
+          :function #'org-roam-todo-wf-tools--watch
           :safe t
-          :args ((todo-id string :required "TODO file path, title, or ID")
-                 (poll-interval integer "Seconds between checks (default: 30)")
+          :args ((todo-id string "Optional: TODO file path, title, or ID")
+                 (poll-interval integer "Seconds between checks (default: 5)")
                  (timeout integer "Maximum seconds to wait (default: 3600)")))
 
         (claude-mcp-deftool todo-wait-for-user
