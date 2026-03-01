@@ -318,9 +318,12 @@ Transition flow:
 1. Validate transition is allowed (state machine rules)
 2. Run :validate-NEW-STATUS hooks (can reject with error)
 3. Fire :on-exit-OLD-STATUS hooks
-4. Update status in file
-5. Fire :on-status-changed hooks
-6. Fire :on-enter-NEW-STATUS hooks (actions)"
+4. Fire :on-enter-NEW-STATUS hooks (actions like merge)
+5. Update status in file (only after enter hooks succeed)
+6. Fire :on-status-changed hooks
+
+Note: Enter hooks run BEFORE status update so that if an action fails
+(e.g., ff-merge), the status remains unchanged and can be retried."
   (let* ((workflow (org-roam-todo-wf--get-workflow todo))
          (old-status (plist-get todo :status))
          (file (plist-get todo :file))
@@ -374,16 +377,17 @@ Transition flow:
           (intern (format ":on-exit-%s" old-status)))
     (org-roam-todo-wf--dispatch-event event)
 
-    ;; 4. Update status in file
-    (org-roam-todo-wf--set-status-in-file file new-status)
-
-    ;; 5. Fire status-changed hook
-    (setf (org-roam-todo-event-type event) :on-status-changed)
-    (org-roam-todo-wf--dispatch-event event)
-
-    ;; 6. Fire enter hook (actions)
+    ;; 4. Fire enter hook FIRST (actions like merge must succeed before status update)
+    ;; This ensures that if an action fails (e.g., ff-merge), status remains unchanged
     (setf (org-roam-todo-event-type event)
           (intern (format ":on-enter-%s" new-status)))
+    (org-roam-todo-wf--dispatch-event event)
+
+    ;; 5. Update status in file (only after enter hooks succeed)
+    (org-roam-todo-wf--set-status-in-file file new-status)
+
+    ;; 6. Fire status-changed hook
+    (setf (org-roam-todo-event-type event) :on-status-changed)
     (org-roam-todo-wf--dispatch-event event)
 
     ;; 7. Start watchers for the new status (if org-roam-todo-wf-watch is loaded)
