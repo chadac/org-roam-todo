@@ -293,6 +293,60 @@ TODO-ID can be a file path, title, or ID.  Defaults to current TODO."
 ;;; - a (advance): auto-approves if review is pending
 
 ;;; ============================================================
+;;; Auto Mode Configuration
+;;; ============================================================
+
+(defcustom org-roam-todo-wf-tools-auto-mode t
+  "Enable automatic workflow management for TODO agents.
+
+In auto-mode:
+- Agents receive reminders to call `todo-advance' or `todo-watch'
+- Permission requests are auto-rejected (use `todo-request-permission')
+- Exceptions: proposals and `todo-wait-for-user' are allowed
+
+Toggle with `org-roam-todo-wf-tools-toggle-auto-mode' or C-c c menu."
+  :type 'boolean
+  :group 'org-roam-todo)
+
+(defvar-local org-roam-todo-wf-tools--auto-mode-enabled nil
+  "Buffer-local override for auto-mode.
+If non-nil, auto-mode is explicitly enabled for this buffer.
+If explicitly set to \\='disabled, auto-mode is disabled for this buffer.
+If nil, uses the global `org-roam-todo-wf-tools-auto-mode' setting.")
+
+(defun org-roam-todo-wf-tools--auto-mode-active-p ()
+  "Return non-nil if auto-mode is active for the current buffer."
+  (cond
+   ((eq org-roam-todo-wf-tools--auto-mode-enabled 'disabled) nil)
+   (org-roam-todo-wf-tools--auto-mode-enabled t)
+   (t org-roam-todo-wf-tools-auto-mode)))
+
+(defun org-roam-todo-wf-tools-toggle-auto-mode (&optional enable)
+  "Toggle auto-mode for the current agent buffer.
+With prefix arg ENABLE, enable if positive, disable if zero or negative.
+Returns the new state."
+  (interactive "P")
+  (let ((new-state (cond
+                    ((null enable)
+                     (not (org-roam-todo-wf-tools--auto-mode-active-p)))
+                    ((> (prefix-numeric-value enable) 0) t)
+                    (t nil))))
+    (setq org-roam-todo-wf-tools--auto-mode-enabled
+          (if new-state t 'disabled))
+    (message "TODO auto-mode %s for this buffer"
+             (if new-state "enabled" "disabled"))
+    new-state))
+
+(defun org-roam-todo-wf-tools--disable-auto-mode-with-note ()
+  "Disable auto-mode and notify the agent.
+Called when user interrupts with C-c C-k."
+  (when (org-roam-todo-wf-tools--auto-mode-active-p)
+    (setq org-roam-todo-wf-tools--auto-mode-enabled 'disabled)
+    (when (fboundp 'claude-agent--send-system-message)
+      (claude-agent--send-system-message
+       "AUTO-MODE DISABLED: The user has interrupted with C-c C-k. Automatic workflow reminders are now disabled. You can ask the user to re-enable auto-mode via the C-c c menu if needed."))))
+
+;;; ============================================================
 ;;; Agent State Tracking
 ;;; ============================================================
 
@@ -302,6 +356,10 @@ Contains a plist with :reason and :since keys.")
 
 (defvar-local org-roam-todo-wf-tools--todo-file nil
   "The TODO file associated with this agent buffer.")
+
+(defvar-local org-roam-todo-wf-tools--proposal-pending nil
+  "When non-nil, the agent has a pending proposal awaiting user response.
+This is set when show-proposal is called and cleared when user responds.")
 
 (defun org-roam-todo-wf-tools--get-agent-waiting-state (worktree-path)
   "Get the waiting state for the agent in WORKTREE-PATH.
@@ -377,7 +435,13 @@ Returns the agent buffer name."
                     #'org-roam-todo-wf-tools--on-user-message nil t)
           ;; Add hook to prompt for advance when agent becomes ready
           (add-hook 'claude-agent-ready-hook
-                    #'org-roam-todo-wf-tools--on-agent-ready nil t))
+                    #'org-roam-todo-wf-tools--on-agent-ready nil t)
+          ;; Add hook to auto-reject permissions in auto-mode
+          (add-hook 'claude-agent-permission-requested-hook
+                    #'org-roam-todo-wf-tools--on-permission-requested nil t)
+          ;; Add hook to track proposal state
+          (add-hook 'claude-agent-tool-invoke-hook
+                    #'org-roam-todo-wf-tools--on-tool-invoke nil t))
         ;; Send task to agent
         (org-roam-todo-wf-tools--send-task-to-agent buf todo)
         buffer-name)
@@ -392,7 +456,31 @@ Clears the waiting state since user has responded."
     (when org-roam-todo-wf-tools--todo-file
       (org-roam-todo-wf-tools--set-property
        org-roam-todo-wf-tools--todo-file
-       "AGENT_WAITING" ""))))
+       "AGENT_WAITING" "")))
+  ;; Also clear proposal pending state when user responds
+  (setq org-roam-todo-wf-tools--proposal-pending nil))
+
+(defun org-roam-todo-wf-tools--on-tool-invoke (tool-name _args)
+  "Hook called when agent invokes a tool.
+TOOL-NAME is the name of the tool being invoked.
+Tracks proposal state for show-proposal tool."
+  (when (string= tool-name "show-proposal")
+    (setq org-roam-todo-wf-tools--proposal-pending t)))
+
+(defvar-local org-roam-todo-wf-tools--permission-requested nil
+  "When non-nil, agent has pending permission via `todo-request-permission'.")
+
+(defun org-roam-todo-wf-tools--on-permission-requested (tool-name _args)
+  "Hook called when agent requests permission for a tool.
+TOOL-NAME is the name of the tool requiring permission.
+In auto-mode, auto-rejects with guidance to use todo-request-permission."
+  (when (and (org-roam-todo-wf-tools--auto-mode-active-p)
+             (not org-roam-todo-wf-tools--permission-requested))
+    ;; Auto-reject with helpful message
+    (when (fboundp 'claude-agent-permission-deny)
+      (claude-agent-permission-deny
+       (format "AUTO-REJECTED: In auto-mode, permission requests are auto-rejected. If you absolutely need permission for '%s', use the `mcp__emacs__todo_request_permission` tool with a reason explaining why this permission is necessary. The user will be notified and can grant permission explicitly."
+               tool-name)))))
 
 (defvar org-roam-todo-wf-tools--ready-prompt-delay 2.0
   "Seconds to wait after agent becomes ready before prompting.
@@ -409,8 +497,9 @@ After a delay, prompts the agent to advance the TODO if appropriate."
     ;; Cancel any existing timer
     (when org-roam-todo-wf-tools--ready-timer
       (cancel-timer org-roam-todo-wf-tools--ready-timer))
-    ;; Don't prompt if agent is waiting for user
-    (unless org-roam-todo-wf-tools--agent-waiting
+    ;; Don't prompt if agent is waiting for user or has pending proposal
+    (unless (or org-roam-todo-wf-tools--agent-waiting
+                org-roam-todo-wf-tools--proposal-pending)
       ;; Set up delayed prompt
       (setq org-roam-todo-wf-tools--ready-timer
             (run-with-timer
@@ -420,20 +509,22 @@ After a delay, prompts the agent to advance the TODO if appropriate."
 
 (defun org-roam-todo-wf-tools--maybe-prompt-advance (buffer)
   "Prompt agent in BUFFER to consider advancing the TODO.
-Only prompts if agent is still ready and not waiting for user."
+Only prompts if auto-mode is active and agent is ready."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq org-roam-todo-wf-tools--ready-timer nil)
       ;; Check conditions for prompting
       (when (and org-roam-todo-wf-tools--todo-file
+                 (org-roam-todo-wf-tools--auto-mode-active-p)
                  (not org-roam-todo-wf-tools--agent-waiting)
+                 (not org-roam-todo-wf-tools--proposal-pending)
                  ;; Check agent is still ready
                  (boundp 'claude-agent--thinking-status)
                  (not claude-agent--thinking-status))
         ;; Send system message reminder
         (when (fboundp 'claude-agent--send-system-message)
           (claude-agent--send-system-message
-           "WORKFLOW REMINDER: If you have completed the task, please call `mcp__emacs__todo_advance` to advance the TODO to the next workflow status. If you need user input to continue, call `mcp__emacs__todo_wait_for_user` with a description of what you need."))))))
+           "WORKFLOW REMINDER: If you have completed the task, please call `mcp__emacs__todo_advance` to advance the TODO to the next workflow status. If you are waiting for async validations (like CI), call `mcp__emacs__todo_watch` to monitor them. If you need user input to continue, call `mcp__emacs__todo_wait_for_user` with a description of what you need."))))))
 
 (defun org-roam-todo-wf-tools--send-task-to-agent (buffer todo)
   "Send TODO task to agent BUFFER."
@@ -1004,6 +1095,41 @@ Reads the PR node from the TODO file and pushes to GitHub/GitLab."
                   "(empty)"))))))
 
 ;;; ============================================================
+;;; Permission Request Tool
+;;; ============================================================
+
+(defun org-roam-todo-wf-tools-request-permission (tool-name reason)
+  "Request permission for TOOL-NAME with REASON.
+In auto-mode, regular permission requests are auto-rejected.
+Use this tool when you absolutely need a specific permission.
+The user will be notified and can grant permission explicitly.
+
+Returns a message indicating the request status."
+  (unless tool-name
+    (user-error "tool_name is required"))
+  (unless reason
+    (user-error "reason is required"))
+  ;; Set the flag so the permission hook knows this is an explicit request
+  (setq org-roam-todo-wf-tools--permission-requested t)
+  ;; Request user attention
+  (when (fboundp 'claude-mcp-request-attention)
+    (claude-mcp-request-attention
+     (format "Permission requested: %s - %s" tool-name reason)
+     'normal))
+  ;; Set the waiting state
+  (setq org-roam-todo-wf-tools--agent-waiting
+        (list :reason (format "Waiting for permission: %s" tool-name)
+              :since (current-time)))
+  ;; Return message to agent
+  (format "Permission request submitted for '%s'.
+Reason: %s
+
+The user has been notified. You will need to wait for them to grant permission.
+The permission dialog will appear when you next attempt to use the tool.
+Use `todo-wait-for-user` if you want to explicitly wait, or continue with other work."
+          tool-name reason))
+
+;;; ============================================================
 ;;; MCP Tool Registration
 ;;; ============================================================
 
@@ -1107,6 +1233,26 @@ To explicitly clear the waiting state, call with an empty reason."
           :needs-session-cwd t
           :args ((reason string :required "What you are waiting for from the user")))
 
+        (claude-mcp-deftool todo-request-permission
+          "Request permission for a specific tool in auto-mode.
+In auto-mode, regular permission requests are auto-rejected to allow
+autonomous operation. Use this tool when you absolutely need permission
+for a specific operation that requires user approval.
+
+This tool:
+1. Notifies the user about the permission request
+2. Sets a waiting state so workflow reminders are paused
+3. The permission dialog will appear when you next attempt the tool
+
+After calling this, you can either:
+- Use `todo-wait-for-user` to explicitly wait for permission
+- Continue with other work until the user responds"
+          :function #'org-roam-todo-wf-tools-request-permission
+          :safe t
+          :needs-session-cwd t
+          :args ((tool-name string :required "Name of the tool requiring permission")
+                 (reason string :required "Explanation of why this permission is needed")))
+
         ;; PR Feedback tools
         (claude-mcp-deftool todo-pr-feedback
           "Get PR/MR feedback summary for the current TODO.
@@ -1190,6 +1336,44 @@ Examples of good progress entries:
           :safe t
           :args ((message string :required "Progress message to log")
                  (todo-id string "Optional: TODO file path, title, or ID (defaults to current)")))))))
+
+;;; ============================================================
+;;; C-c c Menu Integration
+;;; ============================================================
+
+(defun org-roam-todo-wf-tools--auto-mode-description ()
+  "Return description for auto-mode toggle menu item."
+  (format "Auto-mode: %s"
+          (if (org-roam-todo-wf-tools--auto-mode-active-p) "ON" "OFF")))
+
+;; Register menu item when claude-transient is loaded
+(with-eval-after-load 'claude-transient
+  (when (fboundp 'claude-transient-register-agent-item)
+    ;; Use "A" for Auto-mode toggle
+    (claude-transient-register-agent-item
+     "A"
+     #'org-roam-todo-wf-tools--auto-mode-description
+     #'org-roam-todo-wf-tools-toggle-auto-mode
+     "TODO Workflow"
+     ;; Only show in buffers that have a TODO file associated
+     (lambda () org-roam-todo-wf-tools--todo-file))))
+
+;;; ============================================================
+;;; C-c C-k Integration (Auto-disable on interrupt)
+;;; ============================================================
+
+;; Use advice on claude-agent-interrupt to disable auto-mode
+;; This runs after the interrupt is sent, notifying the agent
+(defun org-roam-todo-wf-tools--on-interrupt-advice ()
+  "Advice function to disable auto-mode when user interrupts."
+  ;; Only act if we're in a TODO workflow buffer
+  (when org-roam-todo-wf-tools--todo-file
+    (org-roam-todo-wf-tools--disable-auto-mode-with-note)))
+
+(with-eval-after-load 'claude-agent-repl
+  (advice-add 'claude-agent-interrupt :after
+              #'org-roam-todo-wf-tools--on-interrupt-advice
+              '((name . org-roam-todo-wf-tools--interrupt-advice))))
 
 (provide 'org-roam-todo-wf-tools)
 ;;; org-roam-todo-wf-tools.el ends here
