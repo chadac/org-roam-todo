@@ -27,6 +27,16 @@
 ;; Forward declarations for functions from org-roam-todo.el
 (declare-function org-roam-todo--query-todos "org-roam-todo" (&optional project-filter))
 (declare-function org-roam-todo-mcp-add-progress "org-roam-todo-core" (message &optional todo-id))
+(defvar org-roam-directory)
+
+;; Forward declarations for claude-mcp async functions
+(declare-function claude-mcp-async-complete "claude-mcp")
+(declare-function claude-mcp-async-error "claude-mcp")
+(declare-function claude-mcp-async-register "claude-mcp")
+
+;; Forward declaration for project functions
+(declare-function org-roam-todo-wf-project--refresh-status-buffer-for-project
+                  "org-roam-todo-wf-project")
 
 ;;; ============================================================
 ;;; TODO Resolution
@@ -412,7 +422,7 @@ Only prompts if agent is still ready and not waiting for user."
   "Send TODO task to agent BUFFER."
   (let* ((title (plist-get todo :title))
          (file (plist-get todo :file))
-         (worktree-path (plist-get todo :worktree-path))
+         (_worktree-path (plist-get todo :worktree-path))
          ;; Read full task description from the TODO file
          (task-content (org-roam-todo-wf-tools--read-todo-content file)))
     (with-current-buffer buffer
@@ -600,10 +610,10 @@ This function is called periodically by a timer."
                                (format "Error checking TODO validations: %s"
                                        (error-message-string err)))))))
 
-(defun org-roam-todo-wf-tools--watch (task-id server-port todo-id
+(defun org-roam-todo-wf-tools--watch (task-id mcp-port todo-id
                                               &optional poll-interval timeout)
   "Watch TODO-ID validations until complete or failed (async).
-TASK-ID and SERVER-PORT are provided by the MCP async framework.
+TASK-ID and MCP-PORT are provided by the MCP async framework.
 POLL-INTERVAL defaults to 5 seconds.
 TIMEOUT defaults to 3600 seconds (1 hour).
 
@@ -619,8 +629,7 @@ Returns :async-started immediately and polls in the background."
       (claude-mcp-async-error task-id (format "TODO not found: %s" todo-id))
       (cl-return-from org-roam-todo-wf-tools--watch :async-started))
 
-    (let* ((current-status (plist-get todo :status))
-           (state (list :todo-id todo-id
+    (let* ((state (list :todo-id todo-id
                        :start-time (float-time)
                        :timeout timeout-secs
                        :poll-interval poll-secs
@@ -637,7 +646,7 @@ Returns :async-started immediately and polls in the background."
 
         ;; Register with MCP framework
         (claude-mcp-async-register task-id
-                                   :port server-port
+                                   :port mcp-port
                                    :timer timer
                                    :timeout timeout-secs))
 

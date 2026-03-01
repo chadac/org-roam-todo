@@ -268,7 +268,7 @@ Returns a list of functions, or nil if no project hooks defined."
 (defun org-roam-todo-wf--dispatch-event (event)
   "Run all hooks registered for EVENT in its workflow.
 For :validate-* events: collects structured results from all hooks.
-For other events: runs hooks sequentially, stopping on 'stop return.
+For other events: runs hooks sequentially, stopping on \\='stop return.
 
 Hooks can be specified as:
 - Plain symbols: run with default priority 50
@@ -287,7 +287,7 @@ validations (priority 100+).
 
 Returns:
 - For :validate-* events: (:results (list-of-results...))
-- For other events: 'completed or 'stopped"
+- For other events: \\='completed or \\='stopped"
   (let* ((workflow (org-roam-todo-event-workflow event))
          (event-type (org-roam-todo-event-type event))
          (hooks (org-roam-todo-workflow-hooks workflow))
@@ -439,7 +439,7 @@ Async validations are still running. You can either:
   "Check if TODO at TODO-FILE can be auto-upgraded.
 Returns a plist:
   :can-upgrade - t if upgrade/downgrade should happen
-  :action - 'advance or 'regress
+  :action - \\='advance or \\='regress
   :target-status - status to transition to
   :state - :pass, :pending, :fail, or :feedback
   :results - list of validation results

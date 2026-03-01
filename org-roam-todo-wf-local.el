@@ -52,9 +52,8 @@ EVENT is the workflow event context."
 
 (defun org-roam-todo-wf-local--open-magit-review (event)
   "Open magit diff to review changes against target branch.
-Shows the diff between the rebase target (e.g., main) and the feature branch.
-The diff is displayed in a side window to avoid interrupting the user's workflow.
-Reads properties fresh from file."
+Shows the diff between the rebase target and the feature branch.
+The diff is displayed in a side window. Reads properties fresh from file."
   (let* ((workflow (org-roam-todo-event-workflow event))
          (worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (branch (org-roam-todo-prop event "WORKTREE_BRANCH"))
@@ -77,7 +76,7 @@ Reads properties fresh from file."
 
 (defun org-roam-todo-wf-local--push-main (event)
   "Push the target branch (main) to origin after merge.
-Skips silently if the repository has no 'origin' remote.
+Skips silently if the repository has no \"origin\" remote.
 Reads properties fresh from file."
   (let* ((workflow (org-roam-todo-event-workflow event))
          (project-root (org-roam-todo-prop event "PROJECT_ROOT"))

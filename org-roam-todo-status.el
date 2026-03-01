@@ -43,7 +43,11 @@
 (declare-function org-roam-todo-wf-pr-feedback-summary "org-roam-todo-wf-pr-feedback")
 (declare-function org-roam-todo-wf-pr-feedback-invalidate-cache "org-roam-todo-wf-pr-feedback")
 (declare-function org-roam-todo-wf-pr-feedback-view-full-log "org-roam-todo-wf-pr-feedback")
-
+;; Forward declarations for org functions
+(declare-function org-show-entry "org")
+(declare-function org-show-children "org")
+;; Forward declarations for project module
+(declare-function org-roam-todo-wf-project-get-validations "org-roam-todo-wf-project")
 ;;; ============================================================
 ;;; Customization
 ;;; ============================================================
@@ -670,7 +674,7 @@ If the comment has a diff-hunk, shows the code context."
          (line (plist-get comment :line))
          (diff-hunk (plist-get comment :diff-hunk))
          (state (plist-get comment :state))
-         (created-at (plist-get comment :created-at))
+         (_created-at (plist-get comment :created-at))
          (face (if (eq state 'resolved)
                    'org-roam-todo-status-comment-resolved
                  'org-roam-todo-status-comment-unresolved))
@@ -993,7 +997,7 @@ With FORCE-REFRESH (prefix arg), also invalidate PR feedback cache."
 
 (defun org-roam-todo-status-advance ()
   "Advance TODO to the next status.
-If the TODO requires user approval, use 'v a' to approve first."
+If the TODO requires user approval, use \\='v a\\=' to approve first."
   (interactive)
   (when-let ((todo org-roam-todo-status--todo))
     (let ((result (org-roam-todo-do-advance todo)))
@@ -1064,7 +1068,7 @@ Use `v a' to approve or `v r' to reject from the status buffer."
 
 (defun org-roam-todo-status-review-approve ()
   "Approve the TODO for review.
-Sets APPROVED property. Use 'a' to advance after approving.
+Sets APPROVED property. Use \\='a\\=' to advance after approving.
 Only available when the next status requires user approval validation."
   (interactive)
   (unless org-roam-todo-status--todo
@@ -1179,7 +1183,7 @@ Only available when the next status requires user approval validation."
               (worktree-path (plist-get todo :worktree-path)))
     (if (file-directory-p worktree-path)
         (let ((default-directory worktree-path))
-          (magit-status))
+          (magit-status-setup-buffer))
       (user-error "No worktree found"))))
 
 ;;; ============================================================
@@ -1288,17 +1292,17 @@ Different validations navigate to different places:
       (:magit
        (if (and worktree-path (file-directory-p worktree-path))
            (let ((default-directory worktree-path))
-             (magit-status))
+             (magit-status-setup-buffer))
          (user-error "No worktree found")))
       (:magit-log
        (if (and worktree-path (file-directory-p worktree-path))
            (let ((default-directory worktree-path))
-             (magit-log-current nil nil))
+             (call-interactively #'magit-log-current))
          (user-error "No worktree found")))
       (:project-magit
        (if (and project-root (file-directory-p project-root))
            (let ((default-directory project-root))
-             (magit-status))
+             (magit-status-setup-buffer))
          (user-error "No project root found")))
       (:todo-acceptance
        (if file

@@ -203,7 +203,7 @@ Returns the forge repository object or signals an error."
 (defun org-roam-todo-wf-pr--get-pullreq (worktree-path)
   "Get the pull request for the current branch in WORKTREE-PATH.
 Returns the forge-pullreq object or nil if no PR exists.
-Falls back to database lookup if git config is not set (for externally-created PRs)."
+Falls back to database lookup if git config is not set."
   (let ((default-directory worktree-path))
     (or
      ;; Try fast lookup via git config (set by forge when creating/checking out PRs)
@@ -668,7 +668,7 @@ Requests configured reviewers."
 
 (defun org-roam-todo-wf-pr--on-enter-review-full (event)
   "Full actions when entering review status in simplified workflow.
-Performs all steps: rebase, push, create PR (ready, not draft), and request reviewers."
+Performs rebase, push, create PR (ready), and request reviewers."
   ;; First rebase onto target
   (org-roam-todo-wf--rebase-onto-target event)
   ;; Push the branch

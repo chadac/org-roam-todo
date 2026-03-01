@@ -31,6 +31,9 @@
 ;; Forward declarations for optional features
 (declare-function projectile-project-root "projectile")
 (declare-function projectile-known-projects "projectile")
+(declare-function magit-status "magit-status")
+(declare-function org-roam-todo-event-p "org-roam-todo-wf")
+(declare-function org-roam-todo-event-todo "org-roam-todo-wf")
 
 ;;;; Customization
 

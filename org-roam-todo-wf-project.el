@@ -196,8 +196,8 @@ Returns a list of functions to call for the given event."
 
 (defvar org-roam-todo-wf-project--async-results (make-hash-table :test 'equal)
   "Cache of async validation results.
-Key: (project-root validation-name commit-sha)
-Value: plist (:status :pass/:fail/:pending/:running :message string :timestamp time)")
+Key: (project-root validation-name commit-sha).
+Value: plist with :status, :message, and :timestamp.")
 
 (defvar org-roam-todo-wf-project--async-processes (make-hash-table :test 'equal)
   "Active async validation processes.

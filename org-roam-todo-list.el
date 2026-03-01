@@ -280,7 +280,7 @@ Uses the same logic as `claude-sessions--get-session-status'."
 
 (defun org-roam-todo-list--format-agent (todo)
   "Format agent status indicator for TODO.
-Shows status matching `*claude-sessions*': ready, thinking, waiting, waiting-user."
+Shows status matching `*claude-sessions*': ready, thinking, waiting."
   (let* ((worktree-path (plist-get todo :worktree-path))
          (status (and worktree-path
                       (org-roam-todo-list--get-agent-status worktree-path)))
