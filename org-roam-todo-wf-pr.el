@@ -472,7 +472,7 @@ Used by watchers to poll merge status and trigger auto-advancement."
             (let ((state (org-roam-todo-wf-pr--get-pr-state worktree-path)))
               (pcase state
                 ('merged 'success)
-                ('rejected 'failure)
+                ('closed 'failure)
                 (_ 'pending)))
           (error 'pending))
       'pending)))
@@ -576,8 +576,8 @@ Reads WORKTREE_PATH fresh from file."
   (let* ((worktree-path (org-roam-todo-prop event "WORKTREE_PATH"))
          (state (when worktree-path (org-roam-todo-wf-pr--get-pr-state worktree-path))))
     (pcase state
-      (`merged nil)  ; validation passes
-      (`rejected (user-error "PR was closed without merging.
+      ('merged nil)  ; validation passes
+      ('closed (user-error "PR was closed without merging.
 
 The pull request was closed by a reviewer or maintainer without being merged.
 
@@ -593,7 +593,7 @@ HOW TO FIX:
 
 3. If the work is no longer needed:
    - MCP: mcp__emacs__todo_reject with reason explaining why"))
-      (`open (user-error "PR is still open and awaiting merge.
+      ('open (user-error "PR is still open and awaiting merge.
 
 The pull request has not been merged yet.
 
@@ -722,7 +722,7 @@ Used by watchers to poll status and trigger auto-advancement."
                ;; PR merged = success
                ((eq pr-state 'merged) 'success)
                ;; PR closed without merge = failure
-               ((eq pr-state 'rejected) 'failure)
+               ((eq pr-state 'closed) 'failure)
                ;; CI failed = failure (regress to fix)
                ((eq ci-status 'failure) 'failure)
                ;; Otherwise still pending

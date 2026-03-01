@@ -561,13 +561,13 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
   (org-roam-todo-wf-test--require-wf)
   (org-roam-todo-wf-test--require-mocker)
   (require 'org-roam-todo-wf-pr nil t)
-  (let ((mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :state 'rejected)))
+  (let ((mock-pullreq (make-org-roam-todo-wf-pr-test--mock-pullreq :state 'closed)))
     (advice-add 'oref :around #'org-roam-todo-wf-pr-test--oref-advice)
     (unwind-protect
         (mocker-let
             ((org-roam-todo-wf-pr--get-pullreq (path)
                ((:input '("/tmp/test-repo") :output mock-pullreq))))
-          (should (eq 'rejected (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
+          (should (eq 'closed (org-roam-todo-wf-pr--get-pr-state "/tmp/test-repo"))))
       (advice-remove 'oref #'org-roam-todo-wf-pr-test--oref-advice))))
 
 (ert-deftest wf-pr-test-get-pr-state-no-pr ()
@@ -856,7 +856,7 @@ Named with 'gitlab' so `org-roam-todo-wf-pr--repo-type' detects it correctly."
            ((:input-matcher (lambda (e p) (string= p "WORKTREE_PATH"))
              :output "/tmp/test-repo")))
          (org-roam-todo-wf-pr--get-pr-state (path)
-           ((:input '("/tmp/test-repo") :output 'rejected))))
+           ((:input '("/tmp/test-repo") :output 'closed))))
       ;; Should error when closed without merge
       (should-error (org-roam-todo-wf-pr--require-pr-merged event)
                     :type 'user-error))))
