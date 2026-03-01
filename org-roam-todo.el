@@ -37,9 +37,11 @@
 (require 'org-roam-todo-wf-pr)       ; pull-request workflow
 (require 'org-roam-todo-wf-local)    ; local-ff workflow
 (require 'org-roam-todo-wf-basic)    ; basic workflow
-(require 'org-roam-todo-wf-tools) ; MCP tools for Claude agents
-(require 'org-roam-todo-list)    ; Magit-section based TODO list UI (+ keybindings)
-(require 'org-roam-todo-status)  ; Magit-style TODO status buffer (C-x j)
+(require 'org-roam-todo-wf-tools)   ; MCP tools for Claude agents
+(require 'org-roam-todo-wf-project) ; Per-project validations
+(require 'org-roam-todo-wf-watch)   ; Async validation watching
+(require 'org-roam-todo-list)       ; Magit-section based TODO list UI
+(require 'org-roam-todo-status)     ; Magit-style TODO status buffer (C-x j)
 
 (provide 'org-roam-todo)
 ;;; org-roam-todo.el ends here
