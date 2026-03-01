@@ -325,9 +325,10 @@ it will return that forge type even without a remote. This is intentional."
 ;;; ============================================================
 
 (ert-deftest wf-pr-feedback-test-get-sections ()
-  "Test extracting PR Title and PR Description from TODO file."
+  "Test extracting PR title and description from legacy sections."
   :tags '(:unit :wf :pr-feedback :auto-update)
   (require 'org-roam-todo-wf-pr-feedback nil t)
+  (require 'org-roam-todo-wf-pr nil t)
   (let ((temp-file (make-temp-file "test-todo-" nil ".org")))
     (unwind-protect
         (progn
@@ -341,10 +342,56 @@ it will return that forge type even without a remote. This is intentional."
             (should (string-match-p "This fixes an important bug" (cdr sections)))))
       (delete-file temp-file))))
 
+(ert-deftest wf-pr-feedback-test-get-sections-pr-node ()
+  "Test extracting PR title and description from PR node."
+  :tags '(:unit :wf :pr-feedback :auto-update :pr-node)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((temp-file (make-temp-file "test-todo-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            (insert "** Pull Request Details\n")
+            (insert "*** Fix: Important bug fix\n")
+            (insert ":PROPERTIES:\n:ID: pr-123\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "This fixes an important bug.\n"))
+          (let ((sections (org-roam-todo-wf-pr-feedback--get-sections temp-file)))
+            (should sections)
+            (should (string= "Fix: Important bug fix" (car sections)))
+            (should (string-match-p "This fixes an important bug" (cdr sections)))))
+      (delete-file temp-file))))
+
+(ert-deftest wf-pr-feedback-test-get-sections-pr-node-priority ()
+  "Test that PR node takes priority over legacy sections."
+  :tags '(:unit :wf :pr-feedback :auto-update :pr-node)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (require 'org-roam-todo-wf-pr nil t)
+  (let ((temp-file (make-temp-file "test-todo-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file temp-file
+            (insert ":PROPERTIES:\n:ID: test\n:END:\n#+title: My TODO\n\n")
+            ;; Legacy sections
+            (insert "** PR Title\n\nLegacy title\n\n")
+            (insert "** PR Description\n\nLegacy description.\n\n")
+            ;; PR node (should take priority)
+            (insert "** Pull Request Details\n")
+            (insert "*** Node title\n")
+            (insert ":PROPERTIES:\n:ID: pr-123\n:ROAM_TYPE: pr\n:END:\n\n")
+            (insert "Node description.\n"))
+          (let ((sections (org-roam-todo-wf-pr-feedback--get-sections temp-file)))
+            (should sections)
+            ;; PR node should take priority
+            (should (string= "Node title" (car sections)))
+            (should (string-match-p "Node description" (cdr sections)))))
+      (delete-file temp-file))))
+
 (ert-deftest wf-pr-feedback-test-get-sections-missing-title ()
-  "Test extracting sections when PR Title is missing."
+  "Test extracting sections when PR Title is missing (legacy)."
   :tags '(:unit :wf :pr-feedback :auto-update)
   (require 'org-roam-todo-wf-pr-feedback nil t)
+  (require 'org-roam-todo-wf-pr nil t)
   (let ((temp-file (make-temp-file "test-todo-" nil ".org")))
     (unwind-protect
         (progn
@@ -461,6 +508,62 @@ it will return that forge type even without a remote. This is intentional."
   (require 'org-roam-todo-wf-pr-feedback nil t)
   ;; Should not error when both are nil
   (should-not (org-roam-todo-wf-pr-feedback--update-pr "/tmp/test" nil nil)))
+
+;;; ============================================================
+;;; Org to Markdown Conversion Tests
+;;; ============================================================
+
+(ert-deftest wf-pr-feedback-test-org-to-markdown-basic ()
+  "Test basic org to markdown conversion."
+  :tags '(:unit :wf :pr-feedback :conversion)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (let ((org-text "This is *bold* and /italic/ text."))
+    (let ((result (org-roam-todo-wf-pr-feedback--org-to-markdown org-text)))
+      (should (stringp result))
+      ;; Should convert org bold (*) to markdown bold (**)
+      (should (string-match-p "\\*\\*bold\\*\\*" result))
+      ;; Should convert org italic (/) to markdown italic (*)
+      (should (string-match-p "\\*italic\\*" result)))))
+
+(ert-deftest wf-pr-feedback-test-org-to-markdown-lists ()
+  "Test org list to markdown list conversion."
+  :tags '(:unit :wf :pr-feedback :conversion)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (let ((org-text "- Item 1\n- Item 2\n- Item 3"))
+    (let ((result (org-roam-todo-wf-pr-feedback--org-to-markdown org-text)))
+      (should (stringp result))
+      ;; Should preserve list items
+      (should (string-match-p "Item 1" result))
+      (should (string-match-p "Item 2" result)))))
+
+(ert-deftest wf-pr-feedback-test-org-to-markdown-code-blocks ()
+  "Test org source blocks to markdown code blocks conversion."
+  :tags '(:unit :wf :pr-feedback :conversion)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  ;; org-export uses 4-space indentation for code blocks (standard markdown)
+  ;; rather than triple backticks (GitHub-flavored markdown)
+  (let ((org-text "Here is code:\n\n#+begin_src elisp\n(message \"hello\")\n#+end_src"))
+    (let ((result (org-roam-todo-wf-pr-feedback--org-to-markdown org-text)))
+      (should (stringp result))
+      ;; Should have indented code block (4 spaces)
+      (should (string-match-p "^    (message" result))
+      (should (string-match-p "message" result)))))
+
+(ert-deftest wf-pr-feedback-test-org-to-markdown-nil ()
+  "Test org-to-markdown handles nil input."
+  :tags '(:unit :wf :pr-feedback :conversion)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (should-not (org-roam-todo-wf-pr-feedback--org-to-markdown nil)))
+
+(ert-deftest wf-pr-feedback-test-org-to-markdown-links ()
+  "Test org links to markdown links conversion."
+  :tags '(:unit :wf :pr-feedback :conversion)
+  (require 'org-roam-todo-wf-pr-feedback nil t)
+  (let ((org-text "Check out [[https://example.com][Example Site]]."))
+    (let ((result (org-roam-todo-wf-pr-feedback--org-to-markdown org-text)))
+      (should (stringp result))
+      ;; Should convert to markdown link format
+      (should (string-match-p "\\[Example Site\\](https://example.com)" result)))))
 
 (provide 'org-roam-todo-wf-pr-feedback-test)
 ;;; org-roam-todo-wf-pr-feedback-test.el ends here

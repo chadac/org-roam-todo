@@ -208,9 +208,11 @@ Returns the path to the created TODO file."
     (when (file-exists-p file-path)
       (user-error "A TODO with slug '%s' already exists: %s" slug file-path))
     
-    ;; Create the TODO file
-    (with-temp-file file-path
-      (insert (format ":PROPERTIES:
+    ;; Generate PR node ID
+    (let ((pr-id (format "%s%04x" (format-time-string "%Y%m%dT%H%M%S") (random 65536))))
+      ;; Create the TODO file
+      (with-temp-file file-path
+        (insert (format ":PROPERTIES:
 :ID: %s
 :PROJECT_NAME: %s
 :PROJECT_ROOT: %s
@@ -228,18 +230,27 @@ Returns the path to the created TODO file."
 ** Acceptance Criteria
 %s
 
+** Pull Request Details
+*** %s
+:PROPERTIES:
+:ID: %s
+:ROAM_TYPE: pr
+:END:
+
 ** Progress Log
 
 "
-                      id-timestamp
-                      project-name
-                      resolved-root
-                      model-str
-                      date-stamp
-                      title
-                      project-name
-                      description-text
-                      criteria-text)))
+                        id-timestamp
+                        project-name
+                        resolved-root
+                        model-str
+                        date-stamp
+                        title
+                        project-name
+                        description-text
+                        criteria-text
+                        title
+                        pr-id))))
     
     ;; Sync with org-roam if available
     (when (fboundp 'org-roam-db-update-file)
@@ -661,6 +672,8 @@ Returns :async-started immediately and polls in the background."
 (declare-function org-roam-todo-wf-pr-feedback-fetch "org-roam-todo-wf-pr-feedback")
 (declare-function org-roam-todo-wf-pr-feedback-summary "org-roam-todo-wf-pr-feedback")
 (declare-function org-roam-todo-wf-pr-feedback-invalidate-cache "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback--get-sections "org-roam-todo-wf-pr-feedback")
+(declare-function org-roam-todo-wf-pr-feedback--update-pr "org-roam-todo-wf-pr-feedback")
 
 (defun org-roam-todo-wf-tools-pr-feedback (&optional todo-id force-refresh)
   "Get PR feedback summary for TODO-ID.
@@ -824,6 +837,43 @@ Log tail:
           (concat (format "Found %d failed CI checks:\n\n" (length failed-checks))
                   (mapconcat #'identity (nreverse result) "\n"))))))))
 
+
+(defun org-roam-todo-wf-tools-pr-update (&optional todo-id)
+  "Update the PR title and description from the TODO's PR node.
+TODO-ID can be a file path, title, or ID.  Defaults to current TODO.
+Reads the PR title and description from the TODO file and pushes
+them to the remote PR/MR using gh or glab CLI."
+  (let* ((todo (org-roam-todo-wf-tools--get-todo todo-id))
+         (file (and todo (plist-get todo :file)))
+         (worktree-path (and todo (plist-get todo :worktree-path)))
+         (status (and todo (plist-get todo :status))))
+    (unless todo
+      (user-error "TODO not found: %s" (or todo-id "current directory")))
+    (unless worktree-path
+      (user-error "TODO has no worktree"))
+    (unless (member status '("ci" "ready" "review"))
+      (user-error "TODO must be in ci, ready, or review status to update PR (current: %s)" status))
+    
+    (require 'org-roam-todo-wf-pr-feedback)
+    
+    (let ((sections (org-roam-todo-wf-pr-feedback--get-sections file)))
+      (unless sections
+        (user-error "Could not read PR sections from TODO file"))
+      (let ((title (car sections))
+            (body (cdr sections)))
+        (unless (and title (not (string-empty-p (string-trim title))))
+          (user-error "PR title is empty. Add content to the PR node heading."))
+        (org-roam-todo-wf-pr-feedback--update-pr worktree-path title body)
+        ;; Invalidate cache since we updated the PR
+        (org-roam-todo-wf-pr-feedback-invalidate-cache worktree-path)
+        (format "PR updated successfully.\nTitle: %s\nDescription: %s"
+                title
+                (if body
+                    (if (> (length body) 100)
+                        (concat (substring body 0 100) "...")
+                      body)
+                  "(empty)"))))))
+
 ;;; ============================================================
 ;;; MCP Tool Registration
 ;;; ============================================================
@@ -976,6 +1026,27 @@ Use this to:
           :needs-session-cwd t
           :args ((todo-id string "Optional: TODO file path, title, or ID")
                  (check-name string "Optional: specific check name to view logs for")))
+
+        (claude-mcp-deftool todo-pr-update
+          "Update the PR title and description from the TODO's PR node.
+Reads the PR title (from the PR node heading) and description (from the
+PR node body) and pushes them to the remote PR/MR.
+
+The PR node is a heading with :ROAM_TYPE: pr property:
+  ** Pull Request Details
+  *** My PR Title Here
+  :PROPERTIES:
+  :ID: ...
+  :ROAM_TYPE: pr
+  :END:
+
+  PR description goes here...
+
+Use this to manually sync your TODO's PR content to GitHub/GitLab."
+          :function #'org-roam-todo-wf-tools-pr-update
+          :safe t
+          :needs-session-cwd t
+          :args ((todo-id string "Optional: TODO file path, title, or ID")))
 
         (claude-mcp-deftool todo-add-progress
           "Add an entry to the TODO's progress log.

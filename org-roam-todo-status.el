@@ -230,6 +230,9 @@
     (org-roam-todo-wf-pr--require-pr-merged
      :name "PR merged"
      :target :pr-url)
+    (org-roam-todo-wf-pr--require-pr-sections
+     :name "PR title and description"
+     :target :todo-pr)
     (org-roam-todo-wf--only-human
      :name "Human action required"
      :target nil)
@@ -241,6 +244,7 @@ TARGET-TYPE can be:
   :magit-log     - Open magit-log in worktree
   :project-magit - Open magit-status in project root
   :todo-acceptance - Jump to Acceptance Criteria in TODO file
+  :todo-pr       - Jump to Pull Request Details in TODO file
   :pr-url        - Open PR URL in browser
   nil            - No navigation target")
 
@@ -1314,6 +1318,17 @@ Different validations navigate to different places:
                    (org-show-entry)
                    (org-show-children))
                (message "No 'Acceptance Criteria' heading found")))
+         (user-error "No TODO file found")))
+      (:todo-pr
+       (if file
+           (progn
+             (find-file file)
+             (goto-char (point-min))
+             (if (re-search-forward "^\\*+.*Pull Request Details" nil t)
+                 (progn
+                   (org-show-entry)
+                   (org-show-children))
+               (message "No 'Pull Request Details' heading found")))
          (user-error "No TODO file found")))
       (:pr-url
        (let ((pr-url (plist-get todo :pr-url)))

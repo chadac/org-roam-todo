@@ -20,6 +20,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'ox-md)
 
 ;;; ============================================================
 ;;; Customization
@@ -589,45 +590,73 @@ Key: file path, Value: (pr-title . pr-body)")
 ;; Forward declarations
 (declare-function org-roam-todo-get-file-section "org-roam-todo-core")
 (declare-function org-roam-todo-get-file-property "org-roam-todo-core")
+(declare-function org-roam-todo-wf-pr--get-pr-node "org-roam-todo-wf-pr")
 
 (defun org-roam-todo-wf-pr-feedback--get-sections (file)
-  "Get PR Title and PR Description sections from FILE.
-Returns (title . body) cons cell."
+  "Get PR title and description from FILE.
+Returns (title . body) cons cell.
+First tries to get from PR node (heading with :ROAM_TYPE: pr),
+then falls back to legacy PR Title/PR Description sections."
   (when (and file (file-exists-p file))
-    (cons (org-roam-todo-get-file-section file "PR Title")
-          (org-roam-todo-get-file-section file "PR Description"))))
+    ;; Try PR node first
+    (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
+      (if pr-node
+          (cons (plist-get pr-node :title)
+                (plist-get pr-node :body))
+        ;; Fall back to legacy sections
+        (cons (org-roam-todo-get-file-section file "PR Title")
+              (org-roam-todo-get-file-section file "PR Description"))))))
+
+(defun org-roam-todo-wf-pr-feedback--org-to-markdown (text)
+  "Convert TEXT from org-mode format to GitHub-flavored markdown.
+Returns the converted markdown string."
+  (when text
+    (let ((org-export-with-toc nil)
+          (org-export-with-section-numbers nil)
+          (org-export-with-author nil)
+          (org-export-with-date nil)
+          (org-export-with-title nil)
+          (org-export-headline-levels 6))
+      (with-temp-buffer
+        (insert text)
+        (org-mode)
+        (let ((result (org-export-as 'md nil nil t)))
+          (string-trim result))))))
 
 (defun org-roam-todo-wf-pr-feedback--update-pr-gh (worktree-path title body)
   "Update PR title and body using gh CLI.
 WORKTREE-PATH is the git directory.
 TITLE is the new PR title.
-BODY is the new PR body/description."
+BODY is the PR body in org format (converted to markdown)."
   (let ((default-directory worktree-path)
-        (args '("pr" "edit")))
+        (args '("pr" "edit"))
+        (md-body (org-roam-todo-wf-pr-feedback--org-to-markdown body)))
     (when title
       (setq args (append args (list "--title" title))))
-    (when body
-      (setq args (append args (list "--body" body))))
+    (when md-body
+      (setq args (append args (list "--body" md-body))))
     (apply #'call-process "gh" nil nil nil args)))
 
 (defun org-roam-todo-wf-pr-feedback--update-pr-glab (worktree-path title body)
   "Update MR title and body using glab CLI.
 WORKTREE-PATH is the git directory.
 TITLE is the new MR title.
-BODY is the new MR body/description."
+BODY is the MR body in org format (converted to markdown)."
   (let ((default-directory worktree-path)
-        (args '("mr" "update")))
+        (args '("mr" "update"))
+        (md-body (org-roam-todo-wf-pr-feedback--org-to-markdown body)))
     (when title
       (setq args (append args (list "--title" title))))
-    (when body
-      (setq args (append args (list "--description" body))))
+    (when md-body
+      (setq args (append args (list "--description" md-body))))
     (apply #'call-process "glab" nil nil nil args)))
 
 (defun org-roam-todo-wf-pr-feedback--update-pr (worktree-path title body)
   "Update PR/MR title and body.
 WORKTREE-PATH is the git directory.
 TITLE is the new title (or nil to skip).
-BODY is the new body/description (or nil to skip).
+BODY is the new body/description in org format (or nil to skip).
+Body is automatically converted to markdown before sending.
 Automatically detects forge type (GitHub/GitLab)."
   (when (and worktree-path (or title body))
     (let ((forge (org-roam-todo-wf-pr-feedback--detect-forge worktree-path)))

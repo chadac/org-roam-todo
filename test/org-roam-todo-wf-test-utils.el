@@ -51,7 +51,9 @@ PROPS can include:
   :workflow      - Workflow symbol (optional)
   :subtask-workflow - Workflow for child TODOs (optional)
   :description   - Task description (optional)
-  :acceptance-criteria - Criteria text (optional)"
+  :acceptance-criteria - Criteria text (optional)
+  :pr-title      - PR title (optional, for PR workflow tests)
+  :pr-description - PR description (optional, for PR workflow tests)"
   (let ((id (or (plist-get props :id) (format "test-%s" (random 100000))))
         (title (or (plist-get props :title) "Test TODO"))
         (status (or (plist-get props :status) "draft"))
@@ -65,7 +67,10 @@ PROPS can include:
         (subtask-workflow (plist-get props :subtask-workflow))
         (description (or (plist-get props :description) "Test task description."))
         (criteria (or (plist-get props :acceptance-criteria)
-                      "- [ ] First criterion\n- [ ] Second criterion")))
+                      "- [ ] First criterion\n- [ ] Second criterion"))
+        (pr-title (plist-get props :pr-title))
+        (pr-description (plist-get props :pr-description))
+        (pr-node-id (format "pr-%s" (random 100000))))
     (concat
      ":PROPERTIES:\n"
      (format ":ID: %s\n" id)
@@ -84,6 +89,13 @@ PROPS can include:
      description "\n\n"
      "** Acceptance Criteria\n"
      criteria "\n\n"
+     "** Pull Request Details\n"
+     (format "*** %s\n" (or pr-title title))
+     ":PROPERTIES:\n"
+     (format ":ID: %s\n" pr-node-id)
+     ":ROAM_TYPE: pr\n"
+     ":END:\n"
+     (or pr-description "") "\n\n"
      "** Progress Log\n")))
 
 (defun org-roam-todo-wf-test--cleanup-temp-dir (dir)

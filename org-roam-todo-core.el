@@ -1014,7 +1014,8 @@ If PROJECT-ROOT is nil, prompts for project selection."
          (date-stamp (format-time-string "%Y-%m-%d")))
     (unless (file-directory-p project-dir)
       (make-directory project-dir t))
-    (let ((org-roam-capture-templates
+    (let* ((pr-id (format "%s%04x" (format-time-string "%Y%m%dT%H%M%S") (random 65536)))
+           (org-roam-capture-templates
            `(("t" "Project TODO" plain "%?"
               :target (file+head
                        ,(concat "projects/" project-name "/todo-${slug}.org")
@@ -1034,9 +1035,16 @@ If PROJECT-ROOT is nil, prompts for project selection."
 ** Acceptance Criteria
 - [ ]
 
+** Pull Request Details
+*** ${title}
+:PROPERTIES:
+:ID: %s
+:ROAM_TYPE: pr
+:END:
+
 ** Progress Log
 
-" id-timestamp project-name project-root date-stamp project-name))
+" id-timestamp project-name project-root date-stamp project-name pr-id))
               :unnarrowed t))))
       (org-roam-capture))))
 

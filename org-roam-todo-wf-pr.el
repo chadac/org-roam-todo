@@ -312,14 +312,60 @@ GitHub/GitLab APIs expect branch names without remote prefixes."
       (match-string 1 branch)
     branch))
 
+(defun org-roam-todo-wf-pr--get-pr-node (file)
+  "Get PR node info from FILE.
+Looks for a heading with :ROAM_TYPE: pr property.
+Returns a plist with :title and :body, or nil if not found.
+The heading text becomes the PR title, and the content becomes the body."
+  (when (and file (file-exists-p file))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      ;; Find a heading with ROAM_TYPE: pr property
+      (let ((found nil)
+            (case-fold-search t))
+        (while (and (not found)
+                    (re-search-forward "^\\(\\*+\\)\\s-+\\(.+\\)$" nil t))
+          (let ((level (length (match-string 1)))
+                (heading-title (match-string 2)))
+            ;; Check if this heading has ROAM_TYPE: pr
+            (save-excursion
+              (forward-line 1)
+              (when (looking-at "\\s-*:PROPERTIES:")
+                (let ((props-start (point)))
+                  (when (re-search-forward "^\\s-*:END:" nil t)
+                    (let ((props-text (buffer-substring-no-properties props-start (point))))
+                      (when (string-match ":ROAM_TYPE:\\s-*pr" props-text)
+                        ;; Found the PR node - extract body
+                        (forward-line 1)
+                        (let* ((body-start (point))
+                               ;; Find end: next heading of same level or higher, or end of file
+                               (body-end (if (re-search-forward
+                                              (format "^\\*\\{1,%d\\}\\s-" level) nil t)
+                                             (match-beginning 0)
+                                           (point-max)))
+                               (body (string-trim
+                                      (buffer-substring-no-properties body-start body-end))))
+                          (setq found (list :title (string-trim heading-title)
+                                            :body (if (string-empty-p body) nil body))))))))))))
+        found))))
+
 (defun org-roam-todo-wf-pr--get-pr-title (event)
   "Get the PR title for EVENT.
 Resolution order:
 1. Custom function from `org-roam-todo-wf-pr-title-function'
-2. PR Title section from TODO file
-3. TODO title as fallback"
+2. PR node heading (heading with :ROAM_TYPE: pr)
+3. PR Title section from TODO file (legacy)
+4. TODO title as fallback"
   (or (when org-roam-todo-wf-pr-title-function
         (funcall org-roam-todo-wf-pr-title-function event))
+      (let ((file (org-roam-todo--resolve-file event)))
+        (when file
+          ;; Try PR node first
+          (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
+            (when pr-node
+              (plist-get pr-node :title)))))
+      ;; Legacy: PR Title section
       (let ((file (org-roam-todo--resolve-file event)))
         (when file
           (let ((pr-title (org-roam-todo-get-file-section file "PR Title")))
@@ -331,10 +377,18 @@ Resolution order:
   "Get the PR body/description for EVENT.
 Resolution order:
 1. Custom function from `org-roam-todo-wf-pr-body-function'
-2. PR Description section from TODO file
-3. Default body with TODO title/description"
+2. PR node content (heading with :ROAM_TYPE: pr)
+3. PR Description section from TODO file (legacy)
+4. Default body with TODO title/description"
   (or (when org-roam-todo-wf-pr-body-function
         (funcall org-roam-todo-wf-pr-body-function event))
+      (let ((file (org-roam-todo--resolve-file event)))
+        (when file
+          ;; Try PR node first
+          (let ((pr-node (org-roam-todo-wf-pr--get-pr-node file)))
+            (when pr-node
+              (plist-get pr-node :body)))))
+      ;; Legacy: PR Description section
       (let ((file (org-roam-todo--resolve-file event)))
         (when file
           (let ((pr-body (org-roam-todo-get-file-section file "PR Description")))
@@ -347,21 +401,31 @@ Resolution order:
                 (or description title)))))
 
 (defun org-roam-todo-wf-pr--require-pr-sections (event)
-  "Validate: PR Title and PR Description sections exist and are non-empty.
+  "Validate: PR node or PR Title/Description sections exist and are non-empty.
 EVENT is the workflow event context.
-Only validates if `org-roam-todo-wf-pr-require-pr-sections' is non-nil."
+Only validates if `org-roam-todo-wf-pr-require-pr-sections' is non-nil.
+Accepts either:
+- A PR node (heading with :ROAM_TYPE: pr property)
+- Legacy PR Title and PR Description sections"
   (when org-roam-todo-wf-pr-require-pr-sections
     (let* ((file (org-roam-todo--resolve-file event))
-           (pr-title (when file (org-roam-todo-get-file-section file "PR Title")))
-           (pr-body (when file (org-roam-todo-get-file-section file "PR Description")))
-           (missing '()))
-      (unless (and pr-title (not (string-empty-p (string-trim pr-title))))
-        (push "PR Title" missing))
-      (unless (and pr-body (not (string-empty-p (string-trim pr-body))))
-        (push "PR Description" missing))
-      (when missing
-        (user-error "Missing required sections for PR creation: %s"
-                    (string-join (nreverse missing) ", "))))))
+           (pr-node (when file (org-roam-todo-wf-pr--get-pr-node file))))
+      ;; If PR node exists with both title and body, we're good
+      (if (and pr-node
+               (plist-get pr-node :title)
+               (plist-get pr-node :body))
+          t  ; Valid PR node found
+        ;; Otherwise check legacy sections
+        (let ((pr-title (when file (org-roam-todo-get-file-section file "PR Title")))
+              (pr-body (when file (org-roam-todo-get-file-section file "PR Description")))
+              (missing '()))
+          (unless (and pr-title (not (string-empty-p (string-trim pr-title))))
+            (push "PR Title" missing))
+          (unless (and pr-body (not (string-empty-p (string-trim pr-body))))
+            (push "PR Description" missing))
+          (when missing
+            (user-error "Missing required PR content. Either add a PR node (heading with :ROAM_TYPE: pr) or sections: %s"
+                        (string-join (nreverse missing) ", "))))))))
 
 ;;; ------------------------------------------------------------
 ;;; PR Workflow Hooks
