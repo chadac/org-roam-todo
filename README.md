@@ -53,7 +53,9 @@ Add to your load-path and require:
 
 ## Configuration
 
-Per-project settings via `org-roam-todo-project-config`:
+### Global Project Settings
+
+Per-project settings via `org-roam-todo-project-config` in your init.el:
 
 ```elisp
 (setq org-roam-todo-project-config
@@ -61,6 +63,43 @@ Per-project settings via `org-roam-todo-project-config`:
                          :rebase-target "main"
                          :branch-prefix "feat"))))
 ```
+
+### Per-Project Custom Validations
+
+You can define custom validations that run before TODO status transitions.
+Create a `.org-todo-config.el` file in your project root:
+
+```elisp
+;; ~/.emacs.d/lisp/my-project/.org-todo-config.el
+
+;; Define a validation function
+(defun my-project-run-tests (event)
+  "Ensure tests pass before entering review."
+  (let ((worktree-path (org-roam-todo-prop event "WORKTREE_PATH")))
+    (when worktree-path
+      (let* ((default-directory worktree-path)
+             (result (call-process "npm" nil nil nil "test")))
+        (unless (= 0 result)
+          (user-error "Tests failed! Run 'npm test' to see details."))))))
+
+;; Register validations
+(org-roam-todo-project-validations
+ ;; Run before ANY status transition
+ :global (my-project-lint-check)
+ ;; Run only before entering "review" status
+ :validate-review (my-project-run-tests)
+ ;; Multiple validations for "done"
+ :validate-done (my-project-check-coverage
+                 my-project-check-docs))
+```
+
+Validation functions receive an `event` parameter and should:
+- Return `nil` or `:pass` on success
+- Signal `user-error` on failure (with a helpful message)
+- Return `(:pending "message")` for async validations
+
+The config file is automatically loaded when processing TODOs for that project.
+You can choose to commit it (shared with team) or add it to `.gitignore` (personal only).
 
 ## License
 

@@ -17,6 +17,9 @@
 
 (require 'cl-lib)
 
+;; Soft dependency on project config (loaded on demand)
+(declare-function org-roam-todo-wf-project-get-hooks "org-roam-todo-wf-project")
+
 ;;; ============================================================
 ;;; Data Structures
 ;;; ============================================================
@@ -249,6 +252,19 @@ HOOKS can be a list of symbols or (priority . symbol) cons cells."
   (let ((normalized (mapcar #'org-roam-todo-wf--normalize-hook-entry hooks)))
     (sort normalized (lambda (a b) (< (car a) (car b))))))
 
+(defun org-roam-todo-wf--get-project-hooks (event event-type)
+  "Get project-specific hooks for EVENT and EVENT-TYPE.
+Loads project config from .org-todo-config.el if it exists.
+Returns a list of functions, or nil if no project hooks defined."
+  (when (featurep 'org-roam-todo-wf-project)
+    (when-let ((project-root (plist-get (org-roam-todo-event-todo event) :project-root)))
+      (org-roam-todo-wf-project-get-hooks project-root event-type))))
+
+(defun org-roam-todo-wf--maybe-load-project-module ()
+  "Load org-roam-todo-wf-project if not already loaded."
+  (unless (featurep 'org-roam-todo-wf-project)
+    (require 'org-roam-todo-wf-project nil t)))
+
 (defun org-roam-todo-wf--dispatch-event (event)
   "Run all hooks registered for EVENT in its workflow.
 For :validate-* events: collects structured results from all hooks.
@@ -265,6 +281,10 @@ Validation hooks can return:
 - (:fail \"message\") - validation failed
 - Can also signal user-error (caught and converted to :fail)
 
+For validation events, project-specific validations from .org-todo-config.el
+are merged with workflow validations. Project validations run after workflow
+validations (priority 100+).
+
 Returns:
 - For :validate-* events: (:results (list-of-results...))
 - For other events: 'completed or 'stopped"
@@ -273,9 +293,17 @@ Returns:
          (hooks (org-roam-todo-workflow-hooks workflow))
          (raw-fns (cdr (assq event-type hooks)))
          (is-validation (string-match-p "^:validate-" (symbol-name event-type)))
+         ;; For validations, also get project-specific hooks
+         (project-fns (when is-validation
+                        (org-roam-todo-wf--maybe-load-project-module)
+                        (org-roam-todo-wf--get-project-hooks event event-type)))
+         ;; Project validations get priority 100+ (run after workflow validations)
+         (project-entries (mapcar (lambda (fn) (cons 100 fn)) project-fns))
+         ;; Merge workflow and project hooks
+         (all-fns (append raw-fns project-entries))
          ;; Sort validation hooks by priority; for non-validation, preserve order
          (sorted-entries (if is-validation
-                            (org-roam-todo-wf--sort-hooks-by-priority raw-fns)
+                            (org-roam-todo-wf--sort-hooks-by-priority all-fns)
                           (mapcar #'org-roam-todo-wf--normalize-hook-entry raw-fns)))
          (fns (mapcar #'cdr sorted-entries)))
     (if (null fns)
@@ -359,7 +387,7 @@ Note: Enter hooks run BEFORE status update so that if an action fails
                                 (memq (car inner) '(:fail :error)))
                            (cadr inner))
                           ;; Old format: result itself is (:fail "msg") - NOT a plist
-                          ((and (listp result) 
+                          ((and (listp result)
                                 (not (plist-get result :priority))
                                 (memq (car result) '(:fail :error)))
                            (cadr result))
